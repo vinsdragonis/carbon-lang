@@ -23,58 +23,50 @@ static auto AddExposedNames(const Declaration& declaration,
                             StaticScope& enclosing_scope) -> ErrorOr<Success> {
   switch (declaration.kind()) {
     case DeclarationKind::InterfaceDeclaration: {
-      auto& iface_decl = cast<InterfaceDeclaration>(declaration);
+      const auto& iface_decl = cast<InterfaceDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(
           enclosing_scope.Add(iface_decl.name(), &iface_decl,
                               StaticScope::NameStatus::KnownButNotDeclared));
-      break;
-    }
-    case DeclarationKind::ImplDeclaration: {
-      // Nothing to do here
       break;
     }
     case DeclarationKind::DestructorDeclaration: {
       // TODO: Remove this code. With this code, it is possible to create not
       // useful carbon code.
       //       Without this code, a Segfault is generated
-      auto& func = cast<DestructorDeclaration>(declaration);
+      const auto& func = cast<DestructorDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(enclosing_scope.Add(
           "destructor", &func, StaticScope::NameStatus::KnownButNotDeclared));
       break;
     }
     case DeclarationKind::FunctionDeclaration: {
-      auto& func = cast<FunctionDeclaration>(declaration);
+      const auto& func = cast<FunctionDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(enclosing_scope.Add(
           func.name(), &func, StaticScope::NameStatus::KnownButNotDeclared));
       break;
     }
     case DeclarationKind::ClassDeclaration: {
-      auto& class_decl = cast<ClassDeclaration>(declaration);
+      const auto& class_decl = cast<ClassDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(
           enclosing_scope.Add(class_decl.name(), &class_decl,
                               StaticScope::NameStatus::KnownButNotDeclared));
       break;
     }
     case DeclarationKind::MixinDeclaration: {
-      auto& mixin_decl = cast<MixinDeclaration>(declaration);
+      const auto& mixin_decl = cast<MixinDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(
           enclosing_scope.Add(mixin_decl.name(), &mixin_decl,
                               StaticScope::NameStatus::KnownButNotDeclared));
       break;
     }
-    case DeclarationKind::MixDeclaration: {
-      // Nothing to do here
-      break;
-    }
     case DeclarationKind::ChoiceDeclaration: {
-      auto& choice = cast<ChoiceDeclaration>(declaration);
+      const auto& choice = cast<ChoiceDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(
           enclosing_scope.Add(choice.name(), &choice,
                               StaticScope::NameStatus::KnownButNotDeclared));
       break;
     }
     case DeclarationKind::VariableDeclaration: {
-      auto& var = cast<VariableDeclaration>(declaration);
+      const auto& var = cast<VariableDeclaration>(declaration);
       if (var.binding().name() != AnonymousName) {
         CARBON_RETURN_IF_ERROR(
             enclosing_scope.Add(var.binding().name(), &var.binding(),
@@ -83,7 +75,7 @@ static auto AddExposedNames(const Declaration& declaration,
       break;
     }
     case DeclarationKind::AssociatedConstantDeclaration: {
-      auto& let = cast<AssociatedConstantDeclaration>(declaration);
+      const auto& let = cast<AssociatedConstantDeclaration>(declaration);
       if (let.binding().name() != AnonymousName) {
         CARBON_RETURN_IF_ERROR(
             enclosing_scope.Add(let.binding().name(), &let.binding()));
@@ -91,14 +83,21 @@ static auto AddExposedNames(const Declaration& declaration,
       break;
     }
     case DeclarationKind::SelfDeclaration: {
-      auto& self = cast<SelfDeclaration>(declaration);
+      const auto& self = cast<SelfDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(enclosing_scope.Add("Self", &self));
       break;
     }
     case DeclarationKind::AliasDeclaration: {
-      auto& alias = cast<AliasDeclaration>(declaration);
+      const auto& alias = cast<AliasDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(enclosing_scope.Add(
           alias.name(), &alias, StaticScope::NameStatus::KnownButNotDeclared));
+      break;
+    }
+    case DeclarationKind::ImplDeclaration:
+    case DeclarationKind::MixDeclaration:
+    case DeclarationKind::InterfaceExtendsDeclaration:
+    case DeclarationKind::InterfaceImplDeclaration: {
+      // These declarations don't have a name to expose.
       break;
     }
   }
@@ -290,6 +289,12 @@ static auto ResolveNames(WhereClause& clause,
           ResolveNames(equals_clause.lhs(), enclosing_scope));
       CARBON_RETURN_IF_ERROR(
           ResolveNames(equals_clause.rhs(), enclosing_scope));
+      break;
+    }
+    case WhereClauseKind::RewriteWhereClause: {
+      auto& rewrite_clause = cast<RewriteWhereClause>(clause);
+      CARBON_RETURN_IF_ERROR(
+          ResolveNames(rewrite_clause.replacement(), enclosing_scope));
       break;
     }
   }
@@ -636,6 +641,17 @@ static auto ResolveNames(Declaration& declaration, StaticScope& enclosing_scope,
       }
       break;
     }
+    case DeclarationKind::InterfaceExtendsDeclaration: {
+      auto& extends = cast<InterfaceExtendsDeclaration>(declaration);
+      CARBON_RETURN_IF_ERROR(ResolveNames(*extends.base(), enclosing_scope));
+      break;
+    }
+    case DeclarationKind::InterfaceImplDeclaration: {
+      auto& impl = cast<InterfaceImplDeclaration>(declaration);
+      CARBON_RETURN_IF_ERROR(ResolveNames(*impl.impl_type(), enclosing_scope));
+      CARBON_RETURN_IF_ERROR(ResolveNames(*impl.constraint(), enclosing_scope));
+      break;
+    }
     case DeclarationKind::AssociatedConstantDeclaration: {
       auto& let = cast<AssociatedConstantDeclaration>(declaration);
       CARBON_RETURN_IF_ERROR(ResolveNames(let.binding(), enclosing_scope));
@@ -659,10 +675,10 @@ static auto ResolveNames(Declaration& declaration, StaticScope& enclosing_scope,
 
 auto ResolveNames(AST& ast) -> ErrorOr<Success> {
   StaticScope file_scope;
-  for (auto declaration : ast.declarations) {
+  for (auto* declaration : ast.declarations) {
     CARBON_RETURN_IF_ERROR(AddExposedNames(*declaration, file_scope));
   }
-  for (auto declaration : ast.declarations) {
+  for (auto* declaration : ast.declarations) {
     CARBON_RETURN_IF_ERROR(ResolveNames(
         *declaration, file_scope, ResolveFunctionBodies::AfterDeclarations));
   }

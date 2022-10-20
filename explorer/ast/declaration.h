@@ -90,6 +90,26 @@ class Declaration : public AstNode {
     return constant_value_;
   }
 
+  // Returns whether this node has been declared.
+  auto is_declared() const -> bool { return is_declared_; }
+
+  // Set that this node is declared. Should only be called once, by the
+  // type-checker, once the node is ready to be named and used.
+  void set_is_declared() {
+    CARBON_CHECK(!is_declared_) << "should not be declared twice";
+    is_declared_ = true;
+  }
+
+  // Returns whether this node has been fully type-checked.
+  auto is_type_checked() const -> bool { return is_type_checked_; }
+
+  // Set that this node is type-checked. Should only be called once, by the
+  // type-checker, once full type-checking is complete.
+  void set_is_type_checked() {
+    CARBON_CHECK(!is_type_checked_) << "should not be type-checked twice";
+    is_type_checked_ = true;
+  }
+
  protected:
   // Constructs a Declaration representing syntax at the given line number.
   // `kind` must be the enumerator corresponding to the most-derived type being
@@ -100,6 +120,8 @@ class Declaration : public AstNode {
  private:
   std::optional<Nonnull<const Value*>> static_type_;
   std::optional<Nonnull<const Value*>> constant_value_;
+  bool is_declared_ = false;
+  bool is_type_checked_ = false;
 };
 
 class CallableDeclaration : public Declaration {
@@ -263,7 +285,7 @@ class ClassDeclaration : public Declaration {
     return members_;
   }
   auto destructor() const -> std::optional<Nonnull<DestructorDeclaration*>> {
-    for (auto& x : members_) {
+    for (const auto& x : members_) {
       if (x->kind() == DeclarationKind::DestructorDeclaration) {
         return llvm::cast<DestructorDeclaration>(x);
       }
@@ -294,7 +316,7 @@ class MixinDeclaration : public Declaration {
                    std::vector<Nonnull<Declaration*>> members)
       : Declaration(AstNodeKind::MixinDeclaration, source_loc),
         name_(std::move(name)),
-        params_(std::move(params)),
+        params_(params),
         self_(self),
         members_(std::move(members)) {}
 
@@ -467,11 +489,11 @@ class InterfaceDeclaration : public Declaration {
                        std::vector<Nonnull<Declaration*>> members)
       : Declaration(AstNodeKind::InterfaceDeclaration, source_loc),
         name_(std::move(name)),
-        params_(std::move(params)),
+        params_(params),
         self_type_(arena->New<SelfDeclaration>(source_loc)),
         members_(std::move(members)) {
     // `interface X` has `Self:! X`.
-    auto self_type_ref = arena->New<IdentifierExpression>(source_loc, name);
+    auto* self_type_ref = arena->New<IdentifierExpression>(source_loc, name);
     self_type_ref->set_value_node(self_type_);
     self_ = arena->New<GenericBinding>(source_loc, "Self", self_type_ref);
   }
@@ -500,12 +522,71 @@ class InterfaceDeclaration : public Declaration {
 
   auto value_category() const -> ValueCategory { return ValueCategory::Let; }
 
+  // Get the constraint type corresponding to this interface, or nullopt if
+  // this interface is incomplete.
+  auto constraint_type() const
+      -> std::optional<Nonnull<const ConstraintType*>> {
+    return constraint_type_;
+  }
+
+  // Set the constraint type corresponding to this interface. Can only be set
+  // once, by type-checking.
+  void set_constraint_type(Nonnull<const ConstraintType*> constraint_type) {
+    CARBON_CHECK(!constraint_type_);
+    constraint_type_ = constraint_type;
+  }
+
  private:
   std::string name_;
   std::optional<Nonnull<TuplePattern*>> params_;
   Nonnull<SelfDeclaration*> self_type_;
   Nonnull<GenericBinding*> self_;
   std::vector<Nonnull<Declaration*>> members_;
+  std::optional<Nonnull<const ConstraintType*>> constraint_type_;
+};
+
+// An `extends` declaration in an interface.
+class InterfaceExtendsDeclaration : public Declaration {
+ public:
+  InterfaceExtendsDeclaration(SourceLocation source_loc,
+                              Nonnull<Expression*> base)
+      : Declaration(AstNodeKind::InterfaceExtendsDeclaration, source_loc),
+        base_(base) {}
+
+  static auto classof(const AstNode* node) -> bool {
+    return InheritsFromInterfaceExtendsDeclaration(node->kind());
+  }
+
+  auto base() const -> const Expression* { return base_; }
+  auto base() -> Expression* { return base_; }
+
+ private:
+  Nonnull<Expression*> base_;
+};
+
+// An `impl ... as` declaration in an interface.
+class InterfaceImplDeclaration : public Declaration {
+ public:
+  InterfaceImplDeclaration(SourceLocation source_loc,
+                           Nonnull<Expression*> impl_type,
+                           Nonnull<Expression*> constraint)
+      : Declaration(AstNodeKind::InterfaceImplDeclaration, source_loc),
+        impl_type_(impl_type),
+        constraint_(constraint) {}
+
+  static auto classof(const AstNode* node) -> bool {
+    return InheritsFromInterfaceImplDeclaration(node->kind());
+  }
+
+  auto impl_type() const -> const Expression* { return impl_type_; }
+  auto impl_type() -> Expression* { return impl_type_; }
+
+  auto constraint() const -> const Expression* { return constraint_; }
+  auto constraint() -> Expression* { return constraint_; }
+
+ private:
+  Nonnull<Expression*> impl_type_;
+  Nonnull<Expression*> constraint_;
 };
 
 class AssociatedConstantDeclaration : public Declaration {
@@ -570,6 +651,8 @@ class ImplDeclaration : public Declaration {
   auto constraint_type() const -> Nonnull<const ConstraintType*> {
     return *constraint_type_;
   }
+  // Returns the deduced parameters specified on the impl declaration. This
+  // does not include any generic parameters from enclosing scopes.
   auto deduced_parameters() const
       -> llvm::ArrayRef<Nonnull<const GenericBinding*>> {
     return deduced_parameters_;
@@ -605,10 +688,10 @@ class AliasDeclaration : public Declaration {
  public:
   using ImplementsCarbonValueNode = void;
 
-  explicit AliasDeclaration(SourceLocation source_loc, const std::string& name,
+  explicit AliasDeclaration(SourceLocation source_loc, std::string name,
                             Nonnull<Expression*> target)
       : Declaration(AstNodeKind::AliasDeclaration, source_loc),
-        name_(name),
+        name_(std::move(name)),
         target_(target) {}
 
   static auto classof(const AstNode* node) -> bool {

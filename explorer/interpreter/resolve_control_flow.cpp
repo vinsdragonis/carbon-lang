@@ -179,6 +179,8 @@ auto ResolveControlFlow(Nonnull<Declaration*> declaration) -> ErrorOr<Success> {
     }
     case DeclarationKind::ChoiceDeclaration:
     case DeclarationKind::VariableDeclaration:
+    case DeclarationKind::InterfaceExtendsDeclaration:
+    case DeclarationKind::InterfaceImplDeclaration:
     case DeclarationKind::AssociatedConstantDeclaration:
     case DeclarationKind::SelfDeclaration:
     case DeclarationKind::AliasDeclaration:
@@ -190,7 +192,7 @@ auto ResolveControlFlow(Nonnull<Declaration*> declaration) -> ErrorOr<Success> {
 }
 
 auto ResolveControlFlow(AST& ast) -> ErrorOr<Success> {
-  for (auto declaration : ast.declarations) {
+  for (auto* declaration : ast.declarations) {
     CARBON_RETURN_IF_ERROR(ResolveControlFlow(declaration));
   }
   return Success();

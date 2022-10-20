@@ -237,6 +237,14 @@ static auto ExpressionToProto(const Expression& expression)
                 ExpressionToProto(cast<EqualsWhereClause>(where)->rhs());
             break;
           }
+          case WhereClauseKind::RewriteWhereClause: {
+            auto* rewrite = clause_proto.mutable_rewrite();
+            rewrite->set_member_name(
+                std::string(cast<RewriteWhereClause>(where)->member_name()));
+            *rewrite->mutable_replacement() = ExpressionToProto(
+                cast<RewriteWhereClause>(where)->replacement());
+            break;
+          }
         }
         *where_proto->add_clauses() = clause_proto;
       }
@@ -487,7 +495,7 @@ static auto StatementToProto(const Statement& statement) -> Fuzzing::Statement {
         // TODO: Working out whether we have a default clause after the fact
         // like this is fragile.
         bool is_default_clause = false;
-        if (auto* binding = dyn_cast<BindingPattern>(&clause.pattern())) {
+        if (const auto* binding = dyn_cast<BindingPattern>(&clause.pattern())) {
           if (binding->name() == AnonymousName &&
               isa<AutoPattern>(binding->type()) &&
               binding->source_loc() == binding->type().source_loc()) {
@@ -696,6 +704,21 @@ static auto DeclarationToProto(const Declaration& declaration)
       break;
     }
 
+    case DeclarationKind::InterfaceExtendsDeclaration: {
+      const auto& extends = cast<InterfaceExtendsDeclaration>(declaration);
+      auto* extends_proto = declaration_proto.mutable_interface_extends();
+      *extends_proto->mutable_base() = ExpressionToProto(*extends.base());
+      break;
+    }
+
+    case DeclarationKind::InterfaceImplDeclaration: {
+      const auto& impl = cast<InterfaceImplDeclaration>(declaration);
+      auto* impl_proto = declaration_proto.mutable_interface_impl();
+      *impl_proto->mutable_impl_type() = ExpressionToProto(*impl.impl_type());
+      *impl_proto->mutable_constraint() = ExpressionToProto(*impl.constraint());
+      break;
+    }
+
     case DeclarationKind::AssociatedConstantDeclaration: {
       const auto& assoc = cast<AssociatedConstantDeclaration>(declaration);
       auto* let_proto = declaration_proto.mutable_let();
@@ -749,7 +772,7 @@ static auto DeclarationToProto(const Declaration& declaration)
   return declaration_proto;
 }
 
-Fuzzing::CompilationUnit AstToProto(const AST& ast) {
+auto AstToProto(const AST& ast) -> Fuzzing::CompilationUnit {
   Fuzzing::CompilationUnit compilation_unit;
   *compilation_unit.mutable_package_statement() =
       LibraryNameToProto(ast.package);

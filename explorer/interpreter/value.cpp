@@ -20,7 +20,6 @@ namespace Carbon {
 using llvm::cast;
 using llvm::dyn_cast;
 using llvm::dyn_cast_or_null;
-using llvm::isa;
 
 auto StructValue::FindField(std::string_view name) const
     -> std::optional<Nonnull<const Value*>> {
@@ -39,18 +38,20 @@ static auto GetMember(Nonnull<Arena*> arena, Nonnull<const Value*> v,
   std::string_view f = field.name();
 
   if (field.witness().has_value()) {
-    Nonnull<const Witness*> witness = cast<Witness>(*field.witness());
+    const auto* witness = cast<Witness>(*field.witness());
 
     // Associated constants.
-    if (auto* assoc_const = dyn_cast_or_null<AssociatedConstantDeclaration>(
-            field.member().declaration().value_or(nullptr))) {
+    if (const auto* assoc_const =
+            dyn_cast_or_null<AssociatedConstantDeclaration>(
+                field.member().declaration().value_or(nullptr))) {
       CARBON_CHECK(field.interface()) << "have witness but no interface";
+      // TODO: Use witness to find the value of the constant.
       return arena->New<AssociatedConstant>(v, *field.interface(), assoc_const,
                                             witness);
     }
 
     // Associated functions.
-    if (auto* impl_witness = dyn_cast<ImplWitness>(witness)) {
+    if (const auto* impl_witness = dyn_cast<ImplWitness>(witness)) {
       if (std::optional<Nonnull<const Declaration*>> mem_decl =
               FindMember(f, impl_witness->declaration().members());
           mem_decl.has_value()) {
@@ -60,7 +61,7 @@ static auto GetMember(Nonnull<Arena*> arena, Nonnull<const Value*> v,
                                               &impl_witness->bindings());
         } else {
           // Class function.
-          auto* fun = cast<FunctionValue>(*fun_decl.constant_value());
+          const auto* fun = cast<FunctionValue>(*fun_decl.constant_value());
           return arena->New<FunctionValue>(&fun->declaration(),
                                            &impl_witness->bindings());
         }
@@ -88,7 +89,7 @@ static auto GetMember(Nonnull<Arena*> arena, Nonnull<const Value*> v,
       // Note that the value representation of an empty class is a
       // `StructType`, not a `StructValue`.
       std::optional<Nonnull<const Value*>> field;
-      if (auto* struct_value = dyn_cast<StructValue>(&object.inits())) {
+      if (const auto* struct_value = dyn_cast<StructValue>(&object.inits())) {
         field = struct_value->FindField(f);
       }
       if (field.has_value()) {
@@ -98,16 +99,17 @@ static auto GetMember(Nonnull<Arena*> arena, Nonnull<const Value*> v,
         const auto& class_type = cast<NominalClassType>(object.type());
         std::optional<Nonnull<const FunctionValue*>> func =
             class_type.FindFunction(f);
-        if (func == std::nullopt) {
+        if (!func) {
           return ProgramError(source_loc) << "member " << f << " not in " << *v
                                           << " or its " << class_type;
         } else if ((*func)->declaration().is_method()) {
           // Found a method. Turn it into a bound method.
-          const FunctionValue& m = cast<FunctionValue>(**func);
+          const auto& m = cast<FunctionValue>(**func);
           return arena->New<BoundMethodValue>(&m.declaration(), me_value,
                                               &class_type.bindings());
         } else {
           // Found a class function
+          // TODO: This should not be reachable.
           return arena->New<FunctionValue>(&(*func)->declaration(),
                                            &class_type.bindings());
         }
@@ -123,7 +125,7 @@ static auto GetMember(Nonnull<Arena*> arena, Nonnull<const Value*> v,
     }
     case Value::Kind::NominalClassType: {
       // Access a class function.
-      const NominalClassType& class_type = cast<NominalClassType>(*v);
+      const auto& class_type = cast<NominalClassType>(*v);
       std::optional<Nonnull<const FunctionValue*>> fun =
           class_type.FindFunction(f);
       if (fun == std::nullopt) {
@@ -176,7 +178,7 @@ static auto SetFieldImpl(
       return arena->New<StructValue>(elements);
     }
     case Value::Kind::NominalClassValue: {
-      const NominalClassValue& object = cast<NominalClassValue>(*value);
+      const auto& object = cast<NominalClassValue>(*value);
       CARBON_ASSIGN_OR_RETURN(Nonnull<const Value*> inits,
                               SetFieldImpl(arena, &object.inits(), path_begin,
                                            path_end, field_value, source_loc));
@@ -205,7 +207,7 @@ auto Value::SetField(Nonnull<Arena*> arena, const FieldPath& path,
                      Nonnull<const Value*> field_value,
                      SourceLocation source_loc) const
     -> ErrorOr<Nonnull<const Value*>> {
-  return SetFieldImpl(arena, Nonnull<const Value*>(this),
+  return SetFieldImpl(arena, static_cast<Nonnull<const Value*>>(this),
                       path.components_.begin(), path.components_.end(),
                       field_value, source_loc);
 }
@@ -285,14 +287,14 @@ void Value::Print(llvm::raw_ostream& out) const {
       out << (cast<BoolValue>(*this).value() ? "true" : "false");
       break;
     case Value::Kind::DestructorValue: {
-      const DestructorValue& destructor = cast<DestructorValue>(*this);
+      const auto& destructor = cast<DestructorValue>(*this);
       out << "destructor [ ";
       out << destructor.declaration().me_pattern();
       out << " ]";
       break;
     }
     case Value::Kind::FunctionValue: {
-      const FunctionValue& fun = cast<FunctionValue>(*this);
+      const auto& fun = cast<FunctionValue>(*this);
       out << "fun<" << fun.declaration().name() << ">";
       if (!fun.type_args().empty()) {
         out << "[";
@@ -313,7 +315,7 @@ void Value::Print(llvm::raw_ostream& out) const {
       break;
     }
     case Value::Kind::BoundMethodValue: {
-      const BoundMethodValue& method = cast<BoundMethodValue>(*this);
+      const auto& method = cast<BoundMethodValue>(*this);
       out << "bound_method<" << method.declaration().name() << ">";
       if (!method.type_args().empty()) {
         out << "[";
@@ -430,6 +432,12 @@ void Value::Print(llvm::raw_ostream& out) const {
       }
       out << " where ";
       llvm::ListSeparator sep(" and ");
+      for (const ConstraintType::RewriteConstraint& rewrite :
+           constraint.rewrite_constraints()) {
+        out << sep << ".(" << *rewrite.interface << "."
+            << *GetName(*rewrite.constant)
+            << ") = " << rewrite.replacement->value();
+      }
       for (const ConstraintType::ImplConstraint& impl :
            constraint.impl_constraints()) {
         // TODO: Skip cases where `impl.type` is `.Self` and the interface is
@@ -438,6 +446,7 @@ void Value::Print(llvm::raw_ostream& out) const {
       }
       for (const ConstraintType::EqualityConstraint& equality :
            constraint.equality_constraints()) {
+        // TODO: Skip cases matching something in `rewrite_constraints()`.
         out << sep;
         llvm::ListSeparator equal(" == ");
         for (Nonnull<const Value*> value : equality.values) {
@@ -461,7 +470,7 @@ void Value::Print(llvm::raw_ostream& out) const {
       const auto& witness = cast<ConstraintWitness>(*this);
       out << "(";
       llvm::ListSeparator sep;
-      for (auto* elem : witness.witnesses()) {
+      for (const auto* elem : witness.witnesses()) {
         out << sep << *elem;
       }
       out << ")";
@@ -499,11 +508,14 @@ void Value::Print(llvm::raw_ostream& out) const {
       out << "choice " << cast<ChoiceType>(*this).name();
       break;
     case Value::Kind::VariableType:
-      out << cast<VariableType>(*this).binding();
+      out << cast<VariableType>(*this).binding().name();
       break;
     case Value::Kind::AssociatedConstant: {
       const auto& assoc = cast<AssociatedConstant>(*this);
-      out << "(" << assoc.base() << ")." << assoc.constant().binding().name();
+      out << "(" << assoc.base() << ").(";
+      PrintNameWithBindings(out, &assoc.interface().declaration(),
+                            assoc.interface().args());
+      out << "." << assoc.constant().binding().name() << ")";
       break;
     }
     case Value::Kind::ContinuationValue: {
@@ -518,31 +530,12 @@ void Value::Print(llvm::raw_ostream& out) const {
       out.write_escaped(cast<StringValue>(*this).value());
       out << "\"";
       break;
-    case Value::Kind::TypeOfClassType:
-      out << "typeof(" << cast<TypeOfClassType>(*this).class_type() << ")";
-      break;
     case Value::Kind::TypeOfMixinPseudoType:
       out << "typeof("
           << cast<TypeOfMixinPseudoType>(*this)
                  .mixin_type()
                  .declaration()
                  .name()
-          << ")";
-      break;
-    case Value::Kind::TypeOfInterfaceType:
-      out << "typeof("
-          << cast<TypeOfInterfaceType>(*this)
-                 .interface_type()
-                 .declaration()
-                 .name()
-          << ")";
-      break;
-    case Value::Kind::TypeOfConstraintType:
-      out << "typeof(" << cast<TypeOfConstraintType>(*this).constraint_type()
-          << ")";
-      break;
-    case Value::Kind::TypeOfChoiceType:
-      out << "typeof(" << cast<TypeOfChoiceType>(*this).choice_type().name()
           << ")";
       break;
     case Value::Kind::TypeOfParameterizedEntityName:
@@ -616,8 +609,11 @@ static auto BindingMapEqual(
 auto TypeEqual(Nonnull<const Value*> t1, Nonnull<const Value*> t2,
                std::optional<Nonnull<const EqualityContext*>> equality_ctx)
     -> bool {
+  if (t1 == t2) {
+    return true;
+  }
   if (t1->kind() != t2->kind()) {
-    if (isa<AssociatedConstant>(t1) || isa<AssociatedConstant>(t2)) {
+    if (IsValueKindDependent(t1) || IsValueKindDependent(t2)) {
       return ValueEqual(t1, t2, equality_ctx);
     }
     return false;
@@ -728,21 +724,6 @@ auto TypeEqual(Nonnull<const Value*> t1, Nonnull<const Value*> t2,
     case Value::Kind::VariableType:
       return &cast<VariableType>(*t1).binding() ==
              &cast<VariableType>(*t2).binding();
-    case Value::Kind::TypeOfClassType:
-      return TypeEqual(&cast<TypeOfClassType>(*t1).class_type(),
-                       &cast<TypeOfClassType>(*t2).class_type(), equality_ctx);
-    case Value::Kind::TypeOfInterfaceType:
-      return TypeEqual(&cast<TypeOfInterfaceType>(*t1).interface_type(),
-                       &cast<TypeOfInterfaceType>(*t2).interface_type(),
-                       equality_ctx);
-    case Value::Kind::TypeOfConstraintType:
-      return TypeEqual(&cast<TypeOfConstraintType>(*t1).constraint_type(),
-                       &cast<TypeOfConstraintType>(*t2).constraint_type(),
-                       equality_ctx);
-    case Value::Kind::TypeOfChoiceType:
-      return TypeEqual(&cast<TypeOfChoiceType>(*t1).choice_type(),
-                       &cast<TypeOfChoiceType>(*t2).choice_type(),
-                       equality_ctx);
     case Value::Kind::StaticArrayType: {
       const auto& array1 = cast<StaticArrayType>(*t1);
       const auto& array2 = cast<StaticArrayType>(*t2);
@@ -792,6 +773,9 @@ auto TypeEqual(Nonnull<const Value*> t1, Nonnull<const Value*> t2,
 auto ValueStructurallyEqual(
     Nonnull<const Value*> v1, Nonnull<const Value*> v2,
     std::optional<Nonnull<const EqualityContext*>> equality_ctx) -> bool {
+  if (v1 == v2) {
+    return true;
+  }
   if (v1->kind() != v2->kind()) {
     return false;
   }
@@ -886,11 +870,7 @@ auto ValueStructurallyEqual(
     case Value::Kind::ContinuationType:
     case Value::Kind::VariableType:
     case Value::Kind::StringType:
-    case Value::Kind::TypeOfClassType:
     case Value::Kind::TypeOfMixinPseudoType:
-    case Value::Kind::TypeOfInterfaceType:
-    case Value::Kind::TypeOfConstraintType:
-    case Value::Kind::TypeOfChoiceType:
     case Value::Kind::TypeOfParameterizedEntityName:
     case Value::Kind::TypeOfMemberName:
     case Value::Kind::StaticArrayType:
@@ -918,12 +898,16 @@ auto ValueStructurallyEqual(
 auto ValueEqual(Nonnull<const Value*> v1, Nonnull<const Value*> v2,
                 std::optional<Nonnull<const EqualityContext*>> equality_ctx)
     -> bool {
+  if (v1 == v2) {
+    return true;
+  }
+
   // If we're given an equality context, check to see if it knows these values
   // are equal. Only perform the check if one or the other value is an
   // associated constant; otherwise we should be able to do better by looking
   // at the structures of the values.
   if (equality_ctx) {
-    if (isa<AssociatedConstant>(v1)) {
+    if (IsValueKindDependent(v1)) {
       auto visitor = [&](Nonnull<const Value*> maybe_v2) {
         return !ValueStructurallyEqual(v2, maybe_v2, equality_ctx);
       };
@@ -931,7 +915,7 @@ auto ValueEqual(Nonnull<const Value*> v1, Nonnull<const Value*> v2,
         return true;
       }
     }
-    if (isa<AssociatedConstant>(v2)) {
+    if (IsValueKindDependent(v2)) {
       auto visitor = [&](Nonnull<const Value*> maybe_v1) {
         return !ValueStructurallyEqual(v1, maybe_v1, equality_ctx);
       };
@@ -957,7 +941,7 @@ auto EqualityConstraint::VisitEqualValues(
 
   // The value is in this group; pass all non-identical values in the group
   // to the visitor. First visit the values we already compared.
-  for (auto* val : llvm::make_range(values.begin(), first_equal)) {
+  for (const auto* val : llvm::make_range(values.begin(), first_equal)) {
     if (!visitor(val)) {
       return false;
     }
@@ -965,7 +949,7 @@ auto EqualityConstraint::VisitEqualValues(
   // Then visit any remaining non-identical values, skipping the one we already
   // found was identical.
   ++first_equal;
-  for (auto* val : llvm::make_range(first_equal, values.end())) {
+  for (const auto* val : llvm::make_range(first_equal, values.end())) {
     if (!ValueEqual(value, val, std::nullopt) && !visitor(val)) {
       return false;
     }
@@ -1065,11 +1049,11 @@ auto FindMember(std::string_view name,
 }
 
 void ImplBinding::Print(llvm::raw_ostream& out) const {
-  out << "impl binding " << *type_var_ << " as " << *iface_;
+  out << "impl binding " << *type_var_ << " as " << **iface_;
 }
 
 void ImplBinding::PrintID(llvm::raw_ostream& out) const {
-  out << *type_var_ << " as " << *iface_;
+  out << *type_var_ << " as " << **iface_;
 }
 
 }  // namespace Carbon
