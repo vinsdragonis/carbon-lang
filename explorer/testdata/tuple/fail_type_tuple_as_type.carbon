@@ -8,15 +8,12 @@
 
 package ExplorerTest api;
 
-class A {
-  fn F() {}
-}
-
-class B extends A {
-  fn F() {}
-// CHECK:STDERR: COMPILATION ERROR: {{.*}}/explorer/testdata/class/fail_class_extends.carbon:[[@LINE+1]]: Class extension with `extends` is not supported yet
+fn F[T:! ((), ())](x: T) -> () {
+  // CHECK:STDERR: COMPILATION ERROR: {{.*}}/explorer/testdata/tuple/fail_type_tuple_as_type.carbon:[[@LINE+1]]: only arrays and tuples can be indexed, found T
+  return x[0];
 }
 
 fn Main() -> i32 {
+  F(((), ()));
   return 0;
 }

@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "common/check.h"
+#include "explorer/ast/declaration.h"
 #include "explorer/common/arena.h"
 #include "explorer/common/error_builders.h"
 #include "explorer/interpreter/action.h"
@@ -20,6 +21,7 @@ namespace Carbon {
 using llvm::cast;
 using llvm::dyn_cast;
 using llvm::dyn_cast_or_null;
+using llvm::isa;
 
 auto StructValue::FindField(std::string_view name) const
     -> std::optional<Nonnull<const Value*>> {
@@ -86,19 +88,14 @@ static auto GetMember(Nonnull<Arena*> arena, Nonnull<const Value*> v,
     case Value::Kind::NominalClassValue: {
       const auto& object = cast<NominalClassValue>(*v);
       // Look for a field.
-      // Note that the value representation of an empty class is a
-      // `StructType`, not a `StructValue`.
-      std::optional<Nonnull<const Value*>> field;
-      if (const auto* struct_value = dyn_cast<StructValue>(&object.inits())) {
-        field = struct_value->FindField(f);
-      }
-      if (field.has_value()) {
+      if (std::optional<Nonnull<const Value*>> field =
+              cast<StructValue>(object.inits()).FindField(f)) {
         return *field;
       } else {
         // Look for a method in the object's class
         const auto& class_type = cast<NominalClassType>(object.type());
         std::optional<Nonnull<const FunctionValue*>> func =
-            class_type.FindFunction(f);
+            FindFunctionWithParents(f, class_type.declaration());
         if (!func) {
           return ProgramError(source_loc) << "member " << f << " not in " << *v
                                           << " or its " << class_type;
@@ -127,7 +124,7 @@ static auto GetMember(Nonnull<Arena*> arena, Nonnull<const Value*> v,
       // Access a class function.
       const auto& class_type = cast<NominalClassType>(*v);
       std::optional<Nonnull<const FunctionValue*>> fun =
-          class_type.FindFunction(f);
+          FindFunctionWithParents(f, class_type.declaration());
       if (fun == std::nullopt) {
         return ProgramError(source_loc)
                << "class function " << f << " not in " << *v;
@@ -184,9 +181,10 @@ static auto SetFieldImpl(
                                            path_end, field_value, source_loc));
       return arena->New<NominalClassValue>(&object.type(), inits);
     }
+    case Value::Kind::TupleType:
     case Value::Kind::TupleValue: {
       std::vector<Nonnull<const Value*>> elements =
-          cast<TupleValue>(*value).elements();
+          cast<TupleValueBase>(*value).elements();
       // TODO(geoffromer): update FieldPath to hold integers as well as strings.
       int index = std::stoi(std::string((*path_begin).name()));
       if (index < 0 || static_cast<size_t>(index) >= elements.size()) {
@@ -196,7 +194,11 @@ static auto SetFieldImpl(
       CARBON_ASSIGN_OR_RETURN(
           elements[index], SetFieldImpl(arena, elements[index], path_begin + 1,
                                         path_end, field_value, source_loc));
-      return arena->New<TupleValue>(elements);
+      if (isa<TupleType>(value)) {
+        return arena->New<TupleType>(elements);
+      } else {
+        return arena->New<TupleValue>(elements);
+      }
     }
     default:
       CARBON_FATAL() << "field access not allowed for value " << *value;
@@ -271,10 +273,12 @@ void Value::Print(llvm::raw_ostream& out) const {
       out << cast<NominalClassType>(s.type()).declaration().name() << s.inits();
       break;
     }
+    case Value::Kind::TupleType:
     case Value::Kind::TupleValue: {
       out << "(";
       llvm::ListSeparator sep;
-      for (Nonnull<const Value*> element : cast<TupleValue>(*this).elements()) {
+      for (Nonnull<const Value*> element :
+           cast<TupleValueBase>(*this).elements()) {
         out << sep << *element;
       }
       out << ")";
@@ -426,27 +430,29 @@ void Value::Print(llvm::raw_ostream& out) const {
       const auto& constraint = cast<ConstraintType>(*this);
       out << "constraint ";
       llvm::ListSeparator combine(" & ");
-      for (const ConstraintType::LookupContext& ctx :
-           constraint.lookup_contexts()) {
+      for (const LookupContext& ctx : constraint.lookup_contexts()) {
         out << combine << *ctx.context;
+      }
+      if (constraint.lookup_contexts().empty()) {
+        out << "Type";
       }
       out << " where ";
       llvm::ListSeparator sep(" and ");
-      for (const ConstraintType::RewriteConstraint& rewrite :
+      for (const RewriteConstraint& rewrite :
            constraint.rewrite_constraints()) {
-        out << sep << ".(" << *rewrite.interface << "."
-            << *GetName(*rewrite.constant)
-            << ") = " << rewrite.replacement->value();
+        out << sep << ".(";
+        PrintNameWithBindings(out, &rewrite.constant->interface().declaration(),
+                              rewrite.constant->interface().args());
+        out << "." << *GetName(rewrite.constant->constant())
+            << ") = " << *rewrite.unconverted_replacement;
       }
-      for (const ConstraintType::ImplConstraint& impl :
-           constraint.impl_constraints()) {
+      for (const ImplConstraint& impl : constraint.impl_constraints()) {
         // TODO: Skip cases where `impl.type` is `.Self` and the interface is
         // in `lookup_contexts()`.
         out << sep << *impl.type << " is " << *impl.interface;
       }
-      for (const ConstraintType::EqualityConstraint& equality :
+      for (const EqualityConstraint& equality :
            constraint.equality_constraints()) {
-        // TODO: Skip cases matching something in `rewrite_constraints()`.
         out << sep;
         llvm::ListSeparator equal(" == ");
         for (Nonnull<const Value*> value : equality.values) {
@@ -515,7 +521,7 @@ void Value::Print(llvm::raw_ostream& out) const {
       out << "(" << assoc.base() << ").(";
       PrintNameWithBindings(out, &assoc.interface().declaration(),
                             assoc.interface().args());
-      out << "." << assoc.constant().binding().name() << ")";
+      out << "." << *GetName(assoc.constant()) << ")";
       break;
     }
     case Value::Kind::ContinuationValue: {
@@ -702,9 +708,10 @@ auto TypeEqual(Nonnull<const Value*> t1, Nonnull<const Value*> t2,
     }
     case Value::Kind::ChoiceType:
       return cast<ChoiceType>(*t1).name() == cast<ChoiceType>(*t2).name();
+    case Value::Kind::TupleType:
     case Value::Kind::TupleValue: {
-      const auto& tup1 = cast<TupleValue>(*t1);
-      const auto& tup2 = cast<TupleValue>(*t2);
+      const auto& tup1 = cast<TupleValueBase>(*t1);
+      const auto& tup2 = cast<TupleValueBase>(*t2);
       if (tup1.elements().size() != tup2.elements().size()) {
         return false;
       }
@@ -803,11 +810,12 @@ auto ValueStructurallyEqual(
              body1.has_value() == body2.has_value() &&
              (!body1.has_value() || *body1 == *body2);
     }
+    case Value::Kind::TupleType:
     case Value::Kind::TupleValue: {
       const std::vector<Nonnull<const Value*>>& elements1 =
-          cast<TupleValue>(*v1).elements();
+          cast<TupleValueBase>(*v1).elements();
       const std::vector<Nonnull<const Value*>>& elements2 =
-          cast<TupleValue>(*v2).elements();
+          cast<TupleValueBase>(*v2).elements();
       if (elements1.size() != elements2.size()) {
         return false;
       }
@@ -979,9 +987,10 @@ auto ChoiceType::FindAlternative(std::string_view name) const
   return std::nullopt;
 }
 
-auto NominalClassType::FindFunction(std::string_view name) const
+auto FindFunction(std::string_view name,
+                  llvm::ArrayRef<Nonnull<Declaration*>> members)
     -> std::optional<Nonnull<const FunctionValue*>> {
-  for (const auto& member : declaration().members()) {
+  for (const auto& member : members) {
     switch (member->kind()) {
       case DeclarationKind::MixDeclaration: {
         const auto& mix_decl = cast<MixDeclaration>(*member);
@@ -1030,6 +1039,18 @@ auto MixinPseudoType::FindFunction(const std::string_view& name) const
       default:
         break;
     }
+  }
+  return std::nullopt;
+}
+
+auto FindFunctionWithParents(std::string_view name,
+                             const ClassDeclaration& class_decl)
+    -> std::optional<Nonnull<const FunctionValue*>> {
+  if (auto fun = FindFunction(name, class_decl.members()); fun.has_value()) {
+    return fun;
+  }
+  if (class_decl.base().has_value()) {
+    return FindFunctionWithParents(name, *class_decl.base().value());
   }
   return std::nullopt;
 }

@@ -49,13 +49,13 @@ void ImplScope::Add(Nonnull<const Value*> iface,
                     .witness = witness});
 }
 
-void ImplScope::Add(llvm::ArrayRef<ConstraintType::ImplConstraint> impls,
+void ImplScope::Add(llvm::ArrayRef<ImplConstraint> impls,
                     llvm::ArrayRef<Nonnull<const GenericBinding*>> deduced,
                     llvm::ArrayRef<Nonnull<const ImplBinding*>> impl_bindings,
                     Nonnull<const Witness*> witness,
                     const TypeChecker& type_checker) {
   for (size_t i = 0; i != impls.size(); ++i) {
-    ConstraintType::ImplConstraint impl = impls[i];
+    ImplConstraint impl = impls[i];
     Add(impl.interface, deduced, impl.type, impl_bindings,
         type_checker.MakeConstraintWitnessAccess(witness, i), type_checker);
   }
@@ -63,6 +63,31 @@ void ImplScope::Add(llvm::ArrayRef<ConstraintType::ImplConstraint> impls,
 
 void ImplScope::AddParent(Nonnull<const ImplScope*> parent) {
   parent_scopes_.push_back(parent);
+}
+
+// Checks that `a_evaluated == b_evaluated` for the purpose of an equality
+// constraint. Produces an error if not.
+static auto CheckEqualOrDiagnose(SourceLocation source_loc,
+                                 Nonnull<const Value*> a_written,
+                                 Nonnull<const Value*> a_evaluated,
+                                 Nonnull<const Value*> b_written,
+                                 Nonnull<const Value*> b_evaluated,
+                                 Nonnull<const EqualityContext*> equality_ctx)
+    -> ErrorOr<Success> {
+  if (ValueEqual(a_evaluated, b_evaluated, equality_ctx)) {
+    return Success();
+  }
+  auto error = ProgramError(source_loc);
+  error << "constraint requires that " << *a_written;
+  if (!ValueEqual(a_written, a_evaluated, std::nullopt)) {
+    error << " (with value " << *a_evaluated << ")";
+  }
+  error << " == " << *b_written;
+  if (!ValueEqual(b_written, b_evaluated, std::nullopt)) {
+    error << " (with value " << *b_evaluated << ")";
+  }
+  error << ", which is not known to be true";
+  return std::move(error);
 }
 
 auto ImplScope::Resolve(Nonnull<const Value*> constraint_type,
@@ -103,10 +128,13 @@ auto ImplScope::Resolve(Nonnull<const Value*> constraint_type,
       witnesses.push_back(result);
     }
 
-    // Check that all equality constraints are satisfied in this scope.
-    if (llvm::ArrayRef<EqualityConstraint> equals =
-            constraint->equality_constraints();
-        !equals.empty()) {
+    // Check that all equality and rewrite constraints are satisfied in this
+    // scope.
+    llvm::ArrayRef<EqualityConstraint> equals =
+        constraint->equality_constraints();
+    llvm::ArrayRef<RewriteConstraint> rewrites =
+        constraint->rewrite_constraints();
+    if (!equals.empty() || !rewrites.empty()) {
       std::optional<Nonnull<const Witness*>> witness;
       if (constraint->self_binding()->impl_binding()) {
         witness = type_checker.MakeConstraintWitness(witnesses);
@@ -121,12 +149,19 @@ auto ImplScope::Resolve(Nonnull<const Value*> constraint_type,
         for (; it != equal.values.end(); ++it) {
           Nonnull<const Value*> current =
               type_checker.Substitute(local_bindings, *it);
-          if (!ValueEqual(first, current, &equality_ctx)) {
-            return ProgramError(source_loc)
-                   << "constraint requires that " << *first
-                   << " == " << *current << ", which is not known to be true";
-          }
+          CARBON_RETURN_IF_ERROR(
+              CheckEqualOrDiagnose(source_loc, equal.values.front(), first, *it,
+                                   current, &equality_ctx));
         }
+      }
+      for (auto& rewrite : rewrites) {
+        Nonnull<const Value*> constant =
+            type_checker.Substitute(local_bindings, rewrite.constant);
+        Nonnull<const Value*> value = type_checker.Substitute(
+            local_bindings, rewrite.converted_replacement);
+        CARBON_RETURN_IF_ERROR(CheckEqualOrDiagnose(
+            source_loc, rewrite.constant, constant,
+            rewrite.converted_replacement, value, &equality_ctx));
       }
     }
     return type_checker.MakeConstraintWitness(std::move(witnesses));
@@ -137,7 +172,7 @@ auto ImplScope::Resolve(Nonnull<const Value*> constraint_type,
 auto ImplScope::VisitEqualValues(
     Nonnull<const Value*> value,
     llvm::function_ref<bool(Nonnull<const Value*>)> visitor) const -> bool {
-  for (Nonnull<const ConstraintType::EqualityConstraint*> eq : equalities_) {
+  for (Nonnull<const EqualityConstraint*> eq : equalities_) {
     if (!eq->VisitEqualValues(value, visitor)) {
       return false;
     }
@@ -244,7 +279,7 @@ void ImplScope::Print(llvm::raw_ostream& out) const {
   for (const Impl& impl : impls_) {
     out << sep << *(impl.type) << " as " << *(impl.interface);
   }
-  for (Nonnull<const ConstraintType::EqualityConstraint*> eq : equalities_) {
+  for (Nonnull<const EqualityConstraint*> eq : equalities_) {
     out << sep;
     llvm::ListSeparator equal(" == ");
     for (Nonnull<const Value*> value : eq->values) {

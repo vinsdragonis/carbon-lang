@@ -2103,6 +2103,11 @@ to coordinate to avoid name conflicts, but not across packages.
 
 ### Package declaration
 
+> **Note:** This is provisional, designs for a default package, making the
+> package name optional, and omitting the `package` declaration have not been
+> through the proposal process yet. See
+> [#2323](https://github.com/carbon-language/carbon-lang/issues/2323).
+
 Files start with an optional package declaration, consisting of:
 
 -   the `package` keyword introducer,
@@ -2125,8 +2130,10 @@ Parts of this declaration may be omitted:
 -   If the package name is omitted, as in `package library "Main" api;`, the
     file contributes to the default package. No other package may import from
     the default package.
+
 -   If the library keyword is not specified, as in `package Geometry api;`, this
     file contributes to the default library.
+
 -   If a file has no package declaration at all, it is the `api` file belonging
     to the default package and default library. This is particularly for tests
     and smaller examples. No other library can import this library even from
@@ -2144,6 +2151,10 @@ default package.
 >     [#107: Code and name organization](https://github.com/carbon-language/carbon-lang/pull/107)
 
 ### Imports
+
+> **Note:** This is provisional, designs for making the package name optional
+> have not been through the proposal process yet. See
+> [#2001](https://github.com/carbon-language/carbon-lang/issues/2001).
 
 After the package declaration, files may include `import` declarations. These
 include the package name and optionally `library` followed by the library name.
@@ -2779,14 +2790,14 @@ values for the `ElementType` member of the interface using a `where` clause:
 
 ```carbon
 class IntStack {
-  impl as StackInterface where .ElementType == i32 {
+  impl as StackInterface where .ElementType = i32 {
     fn Push[addr me: Self*](value: i32);
     // ...
   }
 }
 
 class FruitStack {
-  impl as StackInterface where .ElementType == Fruit {
+  impl as StackInterface where .ElementType = Fruit {
     fn Push[addr me: Self*](value: Fruit);
     // ...
   }
@@ -3019,7 +3030,7 @@ to type `T` and the second argument to type `U`, add the `like` keyword to both
 types in the `impl` declaration, as in:
 
 ```carbon
-external impl like T as AddWith(like U) where .Result == V {
+external impl like T as AddWith(like U) where .Result = V {
   // `Self` is `T` here
   fn Op[me: Self](other: U) -> V { ... }
 }
@@ -3125,7 +3136,7 @@ The common type is specified by implementing the `CommonTypeWith` interface:
 
 ```carbon
 // Common type of `A` and `B` is `C`.
-impl A as CommonTypeWith(B) where .Result == C { }
+impl A as CommonTypeWith(B) where .Result = C { }
 ```
 
 The common type is required to be a type that both types have an
@@ -3181,7 +3192,7 @@ available to C++ and a subset of C++ APIs will be available to Carbon.
 
 > References:
 >
-> -   [Bidirectional interoperability with C/C++](interoperability/README.md)
+> -   [Bidirectional interoperability with C and C++](interoperability/README.md)
 > -   Proposal
 >     [#175: C++ interoperability goals](https://github.com/carbon-language/carbon-lang/pull/175)
 

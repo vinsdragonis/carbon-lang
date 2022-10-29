@@ -24,7 +24,7 @@
 namespace Carbon {
 
 class Action;
-class ImplScope;
+class AssociatedConstant;
 
 // Abstract base class of all AST nodes representing values.
 //
@@ -61,6 +61,7 @@ class Value {
     AutoType,
     StructType,
     NominalClassType,
+    TupleType,
     MixinPseudoType,
     InterfaceType,
     ConstraintType,
@@ -298,20 +299,13 @@ class BoolValue : public Value {
   bool value_;
 };
 
-// A non-empty value of a struct type.
-//
-// It can't be empty because `{}` is a struct type as well as a value of that
-// type, so for consistency we always represent it as a StructType rather than
-// let it oscillate unpredictably between the two. However, this means code
-// that handles StructValue instances may also need to be able to handle
-// StructType instances.
+// A value of a struct type. Note that the expression `{}` is a value of type
+// `{} as Type`; the former is a `StructValue` and the latter is a
+// `StructType`.
 class StructValue : public Value {
  public:
   explicit StructValue(std::vector<NamedValue> elements)
-      : Value(Kind::StructValue), elements_(std::move(elements)) {
-    CARBON_CHECK(!elements_.empty())
-        << "`{}` is represented as a StructType, not a StructValue.";
-  }
+      : Value(Kind::StructValue), elements_(std::move(elements)) {}
 
   static auto classof(const Value* value) -> bool {
     return value->kind() == Kind::StructValue;
@@ -391,10 +385,32 @@ class AlternativeValue : public Value {
   Nonnull<const Value*> argument_;
 };
 
-// A tuple value.
-class TupleValue : public Value {
+// Base class for tuple types and tuple values. These are the same other than
+// their type-of-type, but we separate them to make it easier to tell types and
+// values apart.
+class TupleValueBase : public Value {
  public:
-  // An empty tuple, also known as the unit type.
+  explicit TupleValueBase(Value::Kind kind,
+                          std::vector<Nonnull<const Value*>> elements)
+      : Value(kind), elements_(std::move(elements)) {}
+
+  auto elements() const -> llvm::ArrayRef<Nonnull<const Value*>> {
+    return elements_;
+  }
+
+  static auto classof(const Value* value) -> bool {
+    return value->kind() == Kind::TupleValue ||
+           value->kind() == Kind::TupleType;
+  }
+
+ private:
+  std::vector<Nonnull<const Value*>> elements_;
+};
+
+// A tuple value.
+class TupleValue : public TupleValueBase {
+ public:
+  // An empty tuple.
   static auto Empty() -> Nonnull<const TupleValue*> {
     static const TupleValue empty =
         TupleValue(std::vector<Nonnull<const Value*>>());
@@ -402,18 +418,30 @@ class TupleValue : public Value {
   }
 
   explicit TupleValue(std::vector<Nonnull<const Value*>> elements)
-      : Value(Kind::TupleValue), elements_(std::move(elements)) {}
+      : TupleValueBase(Kind::TupleValue, std::move(elements)) {}
 
   static auto classof(const Value* value) -> bool {
     return value->kind() == Kind::TupleValue;
   }
+};
 
-  auto elements() const -> llvm::ArrayRef<Nonnull<const Value*>> {
-    return elements_;
+// A tuple type. This is the result of converting a tuple value containing
+// only types to type Type.
+class TupleType : public TupleValueBase {
+ public:
+  // The unit type.
+  static auto Empty() -> Nonnull<const TupleType*> {
+    static const TupleType empty =
+        TupleType(std::vector<Nonnull<const Value*>>());
+    return static_cast<Nonnull<const TupleType*>>(&empty);
   }
 
- private:
-  std::vector<Nonnull<const Value*>> elements_;
+  explicit TupleType(std::vector<Nonnull<const Value*>> elements)
+      : TupleValueBase(Kind::TupleType, std::move(elements)) {}
+
+  static auto classof(const Value* value) -> bool {
+    return value->kind() == Kind::TupleType;
+  }
 };
 
 // A binding placeholder value.
@@ -587,9 +615,6 @@ class AutoType : public Value {
 };
 
 // A struct type.
-//
-// Code that handles this type may sometimes need to have special-case handling
-// for `{}`, which is a struct value in addition to being a struct type.
 class StructType : public Value {
  public:
   StructType() : StructType(std::vector<NamedValue>{}) {}
@@ -620,11 +645,14 @@ class NominalClassType : public Value {
 
   // Construct a fully instantiated generic class type to represent the
   // run-time type of an object.
-  explicit NominalClassType(Nonnull<const ClassDeclaration*> declaration,
-                            Nonnull<const Bindings*> bindings)
+  explicit NominalClassType(
+      Nonnull<const ClassDeclaration*> declaration,
+      Nonnull<const Bindings*> bindings,
+      std::optional<Nonnull<const NominalClassType*>> base = std::nullopt)
       : Value(Kind::NominalClassType),
         declaration_(declaration),
-        bindings_(bindings) {}
+        bindings_(bindings),
+        base_(base) {}
 
   static auto classof(const Value* value) -> bool {
     return value->kind() == Kind::NominalClassType;
@@ -633,6 +661,10 @@ class NominalClassType : public Value {
   auto declaration() const -> const ClassDeclaration& { return *declaration_; }
 
   auto bindings() const -> const Bindings& { return *bindings_; }
+
+  auto base() const -> std::optional<Nonnull<const NominalClassType*>> {
+    return base_;
+  }
 
   auto type_args() const -> const BindingMap& { return bindings_->args(); }
 
@@ -647,14 +679,10 @@ class NominalClassType : public Value {
     return declaration_->type_params().has_value() && type_args().empty();
   }
 
-  // Returns the value of the function named `name` in this class, or
-  // nullopt if there is no such function.
-  auto FindFunction(std::string_view name) const
-      -> std::optional<Nonnull<const FunctionValue*>>;
-
  private:
   Nonnull<const ClassDeclaration*> declaration_;
   Nonnull<const Bindings*> bindings_ = Bindings::None();
+  std::optional<Nonnull<const NominalClassType*>> base_;
 };
 
 class MixinPseudoType : public Value {
@@ -691,6 +719,18 @@ class MixinPseudoType : public Value {
   Nonnull<const MixinDeclaration*> declaration_;
   Nonnull<const Bindings*> bindings_ = Bindings::None();
 };
+
+// Returns the value of the function named `name` in this class, or
+// nullopt if there is no such function.
+auto FindFunction(std::string_view name,
+                  llvm::ArrayRef<Nonnull<Declaration*>> members)
+    -> std::optional<Nonnull<const FunctionValue*>>;
+
+// Returns the value of the function named `name` in this class and its
+// parents, or nullopt if there is no such function.
+auto FindFunctionWithParents(std::string_view name,
+                             const ClassDeclaration& class_decl)
+    -> std::optional<Nonnull<const FunctionValue*>>;
 
 // Return the declaration of the member with the given name.
 auto FindMember(std::string_view name,
@@ -732,7 +772,15 @@ class InterfaceType : public Value {
   Nonnull<const Bindings*> bindings_ = Bindings::None();
 };
 
-// A collection of values that are known to be the same.
+// A constraint that requires implementation of an interface.
+struct ImplConstraint {
+  // The type that is required to implement the interface.
+  Nonnull<const Value*> type;
+  // The interface that is required to be implemented.
+  Nonnull<const InterfaceType*> interface;
+};
+
+// A constraint that a collection of values are known to be the same.
 struct EqualityConstraint {
   // Visit the values in this equality constraint that are a single step away
   // from the given value according to this equality constraint. That is: if
@@ -747,6 +795,24 @@ struct EqualityConstraint {
       llvm::function_ref<bool(Nonnull<const Value*>)> visitor) const -> bool;
 
   std::vector<Nonnull<const Value*>> values;
+};
+
+// A constraint indicating that access to an associated constant should be
+// replaced by another value.
+struct RewriteConstraint {
+  // The associated constant value that is rewritten.
+  Nonnull<const AssociatedConstant*> constant;
+  // The replacement in its original type.
+  Nonnull<const Value*> unconverted_replacement;
+  // The type of the replacement.
+  Nonnull<const Value*> unconverted_replacement_type;
+  // The replacement after conversion to the type of the associated constant.
+  Nonnull<const Value*> converted_replacement;
+};
+
+// A context in which we might look up a name.
+struct LookupContext {
+  Nonnull<const Value*> context;
 };
 
 // A type-of-type for an unknown constrained type.
@@ -767,27 +833,6 @@ struct EqualityConstraint {
 // `VariableType` naming the `self_binding`.
 class ConstraintType : public Value {
  public:
-  // A required implementation of an interface.
-  struct ImplConstraint {
-    Nonnull<const Value*> type;
-    Nonnull<const InterfaceType*> interface;
-  };
-
-  using EqualityConstraint = Carbon::EqualityConstraint;
-
-  // A constraint indicating that access to an associated constant should be
-  // replaced by another value.
-  struct RewriteConstraint {
-    Nonnull<const InterfaceType*> interface;
-    Nonnull<const AssociatedConstantDeclaration*> constant;
-    Nonnull<const ValueLiteral*> replacement;
-  };
-
-  // A context in which we might look up a name.
-  struct LookupContext {
-    Nonnull<const Value*> context;
-  };
-
   explicit ConstraintType(Nonnull<const GenericBinding*> self_binding,
                           std::vector<ImplConstraint> impl_constraints,
                           std::vector<EqualityConstraint> equality_constraints,

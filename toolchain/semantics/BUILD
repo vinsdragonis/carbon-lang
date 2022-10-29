@@ -5,48 +5,44 @@
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
-    name = "nodes",
-    hdrs = [
-        "node_kind.h",
-        "node_ref.h",
-        "nodes/binary_operator.h",
-        "nodes/function.h",
-        "nodes/integer_literal.h",
-        "nodes/return.h",
-        "nodes/set_name.h",
-    ],
+    name = "semantics_builtin_kind",
+    srcs = ["semantics_builtin_kind.cpp"],
+    hdrs = ["semantics_builtin_kind.h"],
+    textual_hdrs = ["semantics_builtin_kind.def"],
     deps = [
-        "//common:check",
         "//common:ostream",
-        "//toolchain/parser:parse_tree",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_library(
+    name = "semantics_node_kind",
+    srcs = ["semantics_node_kind.cpp"],
+    hdrs = ["semantics_node_kind.h"],
+    textual_hdrs = ["semantics_node_kind.def"],
+    deps = [
+        "//common:ostream",
         "@llvm-project//llvm:Support",
     ],
 )
 
 cc_library(
     name = "semantics_ir",
-    srcs = ["semantics_ir.cpp"],
+    srcs = [
+        "semantics_parse_tree_handler.cpp",
+        "semantics_ir.cpp",
+        "semantics_node.cpp",
+    ],
     hdrs = [
-        "node_store.h",
+        "semantics_parse_tree_handler.h",
         "semantics_ir.h",
+        "semantics_node.h",
     ],
     deps = [
-        ":nodes",
+        ":semantics_builtin_kind",
+        ":semantics_node_kind",
         "//common:check",
-        "//toolchain/lexer:tokenized_buffer",
-        "//toolchain/parser:parse_tree",
-        "@llvm-project//llvm:Support",
-    ],
-)
-
-cc_library(
-    name = "semantics_ir_factory",
-    srcs = ["semantics_ir_factory.cpp"],
-    hdrs = ["semantics_ir_factory.h"],
-    deps = [
-        ":nodes",
-        ":semantics_ir",
-        "//common:check",
+        "//common:ostream",
         "//toolchain/lexer:token_kind",
         "//toolchain/lexer:tokenized_buffer",
         "//toolchain/parser:parse_node_kind",
