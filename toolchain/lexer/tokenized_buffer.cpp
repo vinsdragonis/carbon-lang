@@ -85,9 +85,9 @@ class TokenizedBuffer::Lexer {
 
   Lexer(TokenizedBuffer& buffer, DiagnosticConsumer& consumer)
       : buffer_(&buffer),
-        translator_(buffer, &current_column_),
+        translator_(&buffer, &current_column_),
         emitter_(translator_, consumer),
-        token_translator_(buffer, &current_column_),
+        token_translator_(&buffer, &current_column_),
         token_emitter_(token_translator_, consumer),
         current_line_(buffer.AddLine({0, 0, 0})),
         current_line_info_(&buffer.GetLineInfo(current_line_)) {}
@@ -733,7 +733,7 @@ auto TokenizedBuffer::IsRecoveryToken(Token token) const -> bool {
 }
 
 auto TokenizedBuffer::GetLineNumber(Line line) const -> int {
-  return line.index_ + 1;
+  return line.index + 1;
 }
 
 auto TokenizedBuffer::GetIndentColumnNumber(Line line) const -> int {
@@ -742,7 +742,7 @@ auto TokenizedBuffer::GetIndentColumnNumber(Line line) const -> int {
 
 auto TokenizedBuffer::GetIdentifierText(Identifier identifier) const
     -> llvm::StringRef {
-  return identifier_infos_[identifier.index_].text;
+  return identifier_infos_[identifier.index].text;
 }
 
 auto TokenizedBuffer::PrintWidths::Widen(const PrintWidths& widths) -> void {
@@ -803,7 +803,7 @@ auto TokenizedBuffer::PrintToken(llvm::raw_ostream& output_stream,
 auto TokenizedBuffer::PrintToken(llvm::raw_ostream& output_stream, Token token,
                                  PrintWidths widths) const -> void {
   widths.Widen(GetTokenPrintWidths(token));
-  int token_index = token.index_;
+  int token_index = token.index;
   const auto& token_info = GetTokenInfo(token);
   llvm::StringRef token_text = GetTokenText(token);
 
@@ -825,7 +825,7 @@ auto TokenizedBuffer::PrintToken(llvm::raw_ostream& output_stream, Token token,
 
   switch (token_info.kind) {
     case TokenKind::Identifier():
-      output_stream << ", identifier: " << GetIdentifier(token).index_;
+      output_stream << ", identifier: " << GetIdentifier(token).index;
       break;
     case TokenKind::IntegerLiteral():
       output_stream << ", value: `";
@@ -841,10 +841,10 @@ auto TokenizedBuffer::PrintToken(llvm::raw_ostream& output_stream, Token token,
     default:
       if (token_info.kind.IsOpeningSymbol()) {
         output_stream << ", closing_token: "
-                      << GetMatchedClosingToken(token).index_;
+                      << GetMatchedClosingToken(token).index;
       } else if (token_info.kind.IsClosingSymbol()) {
         output_stream << ", opening_token: "
-                      << GetMatchedOpeningToken(token).index_;
+                      << GetMatchedOpeningToken(token).index;
       }
       break;
   }
@@ -860,11 +860,11 @@ auto TokenizedBuffer::PrintToken(llvm::raw_ostream& output_stream, Token token,
 }
 
 auto TokenizedBuffer::GetLineInfo(Line line) -> LineInfo& {
-  return line_infos_[line.index_];
+  return line_infos_[line.index];
 }
 
 auto TokenizedBuffer::GetLineInfo(Line line) const -> const LineInfo& {
-  return line_infos_[line.index_];
+  return line_infos_[line.index];
 }
 
 auto TokenizedBuffer::AddLine(LineInfo info) -> Line {
@@ -873,11 +873,11 @@ auto TokenizedBuffer::AddLine(LineInfo info) -> Line {
 }
 
 auto TokenizedBuffer::GetTokenInfo(Token token) -> TokenInfo& {
-  return token_infos_[token.index_];
+  return token_infos_[token.index];
 }
 
 auto TokenizedBuffer::GetTokenInfo(Token token) const -> const TokenInfo& {
-  return token_infos_[token.index_];
+  return token_infos_[token.index];
 }
 
 auto TokenizedBuffer::AddToken(TokenInfo info) -> Token {
@@ -887,7 +887,7 @@ auto TokenizedBuffer::AddToken(TokenInfo info) -> Token {
 
 auto TokenizedBuffer::TokenIterator::Print(llvm::raw_ostream& output) const
     -> void {
-  output << token_.index_;
+  output << token_.index;
 }
 
 auto TokenizedBuffer::SourceBufferLocationTranslator::GetLocation(
@@ -944,7 +944,7 @@ auto TokenizedBuffer::TokenLocationTranslator::GetLocation(Token token)
   // Find the corresponding file location.
   // TODO: Should we somehow indicate in the diagnostic location if this token
   // is a recovery token that doesn't correspond to the original source?
-  return SourceBufferLocationTranslator(*buffer_, last_line_lexed_to_column_)
+  return SourceBufferLocationTranslator(buffer_, last_line_lexed_to_column_)
       .GetLocation(token_start);
 }
 
