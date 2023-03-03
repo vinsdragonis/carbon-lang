@@ -82,6 +82,7 @@ cc_library(
         ":resolve_control_flow",
         ":resolve_names",
         ":resolve_unformed",
+        ":trace_stream",
         ":type_checker",
         "//common:check",
         "//common:ostream",
@@ -142,6 +143,7 @@ cc_library(
         ":address",
         ":heap",
         ":stack",
+        ":trace_stream",
         "//common:check",
         "//common:error",
         "//common:ostream",
@@ -204,15 +206,31 @@ cc_library(
 )
 
 cc_library(
+    name = "trace_stream",
+    hdrs = ["trace_stream.h"],
+    visibility = [
+        "//explorer:__pkg__",
+        "//explorer/fuzzing:__pkg__",
+    ],
+    deps = [
+        "//common:check",
+        "//common:ostream",
+        "//explorer/common:nonnull",
+    ],
+)
+
+cc_library(
     name = "type_checker",
     srcs = [
         "builtins.cpp",
         "impl_scope.cpp",
+        "matching_impl_set.cpp",
         "type_checker.cpp",
     ],
     hdrs = [
         "builtins.h",
         "impl_scope.h",
+        "matching_impl_set.h",
         "type_checker.h",
     ],
     deps = [
@@ -220,6 +238,7 @@ cc_library(
         ":dictionary",
         ":interpreter",
         ":pattern_analysis",
+        ":trace_stream",
         "//common:check",
         "//common:error",
         "//common:ostream",

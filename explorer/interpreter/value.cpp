@@ -195,11 +195,15 @@ static auto GetNamedElement(Nonnull<Arena*> arena, Nonnull<const Value*> v,
     }
     case Value::Kind::ChoiceType: {
       const auto& choice = cast<ChoiceType>(*v);
-      if (!choice.FindAlternative(f)) {
+      auto alt = choice.declaration().FindAlternative(f);
+      if (!alt) {
         return ProgramError(source_loc)
                << "alternative " << f << " not in " << *v;
       }
-      return arena->New<AlternativeConstructorValue>(f, choice.name());
+      if ((*alt)->parameters()) {
+        return arena->New<AlternativeConstructorValue>(&choice, *alt);
+      }
+      return arena->New<AlternativeValue>(&choice, *alt, std::nullopt);
     }
     case Value::Kind::NominalClassType: {
       // Access a class function.
@@ -360,7 +364,8 @@ void Value::Print(llvm::raw_ostream& out) const {
   switch (kind()) {
     case Value::Kind::AlternativeConstructorValue: {
       const auto& alt = cast<AlternativeConstructorValue>(*this);
-      out << alt.choice_name() << "." << alt.alt_name();
+      out << alt.choice().declaration().name() << "."
+          << alt.alternative().name();
       break;
     }
     case Value::Kind::BindingPlaceholderValue: {
@@ -381,8 +386,11 @@ void Value::Print(llvm::raw_ostream& out) const {
     }
     case Value::Kind::AlternativeValue: {
       const auto& alt = cast<AlternativeValue>(*this);
-      out << "alt " << alt.choice_name() << "." << alt.alt_name() << " "
-          << alt.argument();
+      out << alt.choice().declaration().name() << "."
+          << alt.alternative().name();
+      if (auto arg = alt.argument()) {
+        out << **arg;
+      }
       break;
     }
     case Value::Kind::StructValue: {
@@ -536,6 +544,13 @@ void Value::Print(llvm::raw_ostream& out) const {
       }
       break;
     }
+    case Value::Kind::ChoiceType: {
+      const auto& choice_type = cast<ChoiceType>(*this);
+      out << "choice ";
+      PrintNameWithBindings(out, &choice_type.declaration(),
+                            choice_type.type_args());
+      break;
+    }
     case Value::Kind::MixinPseudoType: {
       const auto& mixin_type = cast<MixinPseudoType>(*this);
       out << "mixin ";
@@ -647,9 +662,6 @@ void Value::Print(llvm::raw_ostream& out) const {
       }
       break;
     }
-    case Value::Kind::ChoiceType:
-      out << "choice " << cast<ChoiceType>(*this).name();
-      break;
     case Value::Kind::VariableType:
       out << cast<VariableType>(*this).binding().name();
       break;
@@ -810,22 +822,22 @@ auto TypeEqual(Nonnull<const Value*> t1, Nonnull<const Value*> t2,
     case Value::Kind::NominalClassType: {
       const auto& class1 = cast<NominalClassType>(*t1);
       const auto& class2 = cast<NominalClassType>(*t2);
-      return class1.declaration().name() == class2.declaration().name() &&
+      return DeclaresSameEntity(class1.declaration(), class2.declaration()) &&
              BindingMapEqual(class1.bindings().args(), class2.bindings().args(),
                              equality_ctx);
     }
     case Value::Kind::InterfaceType: {
       const auto& iface1 = cast<InterfaceType>(*t1);
       const auto& iface2 = cast<InterfaceType>(*t2);
-      return iface1.declaration().name() == iface2.declaration().name() &&
+      return DeclaresSameEntity(iface1.declaration(), iface2.declaration()) &&
              BindingMapEqual(iface1.bindings().args(), iface2.bindings().args(),
                              equality_ctx);
     }
     case Value::Kind::NamedConstraintType: {
       const auto& constraint1 = cast<NamedConstraintType>(*t1);
       const auto& constraint2 = cast<NamedConstraintType>(*t2);
-      return constraint1.declaration().name() ==
-                 constraint2.declaration().name() &&
+      return DeclaresSameEntity(constraint1.declaration(),
+                                constraint2.declaration()) &&
              BindingMapEqual(constraint1.bindings().args(),
                              constraint2.bindings().args(), equality_ctx);
     }
@@ -873,8 +885,13 @@ auto TypeEqual(Nonnull<const Value*> t1, Nonnull<const Value*> t2,
       }
       return true;
     }
-    case Value::Kind::ChoiceType:
-      return cast<ChoiceType>(*t1).name() == cast<ChoiceType>(*t2).name();
+    case Value::Kind::ChoiceType: {
+      const auto& choice1 = cast<ChoiceType>(*t1);
+      const auto& choice2 = cast<ChoiceType>(*t2);
+      return DeclaresSameEntity(choice1.declaration(), choice2.declaration()) &&
+             BindingMapEqual(choice1.type_args(), choice2.type_args(),
+                             equality_ctx);
+    }
     case Value::Kind::TupleType:
     case Value::Kind::TupleValue: {
       const auto& tup1 = cast<TupleValueBase>(*t1);
@@ -1008,6 +1025,17 @@ auto ValueStructurallyEqual(
       }
       return true;
     }
+    case Value::Kind::AlternativeValue: {
+      const auto& alt1 = cast<AlternativeValue>(*v1);
+      const auto& alt2 = cast<AlternativeValue>(*v2);
+      if (!TypeEqual(&alt1.choice(), &alt2.choice(), equality_ctx) ||
+          &alt1.alternative() != &alt2.alternative()) {
+        return false;
+      }
+      CARBON_CHECK(alt1.argument().has_value() == alt2.argument().has_value());
+      return !alt1.argument().has_value() ||
+             ValueEqual(*alt1.argument(), *alt2.argument(), equality_ctx);
+    }
     case Value::Kind::StringValue:
       return cast<StringValue>(*v1).value() == cast<StringValue>(*v2).value();
     case Value::Kind::ParameterizedEntityName: {
@@ -1023,7 +1051,7 @@ auto ValueStructurallyEqual(
       // The witness value is not part of determining value equality.
       const auto& assoc1 = cast<AssociatedConstant>(*v1);
       const auto& assoc2 = cast<AssociatedConstant>(*v2);
-      return &assoc1.constant() == &assoc2.constant() &&
+      return DeclaresSameEntity(assoc1.constant(), assoc2.constant()) &&
              TypeEqual(&assoc1.base(), &assoc2.base(), equality_ctx) &&
              TypeEqual(&assoc1.interface(), &assoc2.interface(), equality_ctx);
     }
@@ -1054,7 +1082,6 @@ auto ValueStructurallyEqual(
     case Value::Kind::StaticArrayType:
       return TypeEqual(v1, v2, equality_ctx);
     case Value::Kind::NominalClassValue:
-    case Value::Kind::AlternativeValue:
     case Value::Kind::BindingPlaceholderValue:
     case Value::Kind::AddrValue:
     case Value::Kind::AlternativeConstructorValue:
@@ -1144,17 +1171,6 @@ auto ConstraintType::VisitEqualValues(
     }
   }
   return true;
-}
-
-auto ChoiceType::FindAlternative(std::string_view name) const
-    -> std::optional<Nonnull<const Value*>> {
-  std::vector<NamedValue> alternatives = declaration_->members();
-  for (const NamedValue& alternative : alternatives) {
-    if (alternative.name == name) {
-      return alternative.value;
-    }
-  }
-  return std::nullopt;
 }
 
 auto FindFunction(std::string_view name,

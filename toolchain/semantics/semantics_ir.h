@@ -16,17 +16,49 @@ class SemanticsIRForTest;
 
 namespace Carbon {
 
+// A call.
+struct SemanticsCall {
+  auto Print(llvm::raw_ostream& out) const -> void {
+    out << "{arg_ir: " << arg_ir_id << ", arg_refs: " << arg_refs_id << "}";
+  }
+
+  // The full IR for arguments.
+  SemanticsNodeBlockId arg_ir_id;
+  // A block containing a single reference node per argument.
+  SemanticsNodeBlockId arg_refs_id;
+};
+
 // A callable object.
 struct SemanticsCallable {
   auto Print(llvm::raw_ostream& out) const -> void {
-    out << "{param_ir: " << param_ir_id << ", param_refs: " << param_refs_id
-        << "}";
+    out << "{param_ir: " << param_ir_id << ", param_refs: " << param_refs_id;
+    if (return_type_id.is_valid()) {
+      out << ", return_type: " << return_type_id;
+    }
+    out << "}";
   }
 
   // The full IR for parameters.
   SemanticsNodeBlockId param_ir_id;
   // A block containing a single reference node per parameter.
   SemanticsNodeBlockId param_refs_id;
+  // The return type. This will be invalid if the return type wasn't specified.
+  // The IR corresponding to the return type will be in a node block.
+  SemanticsNodeId return_type_id;
+};
+
+struct SemanticsRealLiteral {
+  auto Print(llvm::raw_ostream& out) const -> void {
+    out << "{mantissa: " << mantissa << ", exponent: " << exponent
+        << ", is_decimal: " << is_decimal << "}";
+  }
+
+  llvm::APInt mantissa;
+  llvm::APInt exponent;
+
+  // If false, the value is mantissa * 2^exponent.
+  // If true, the value is mantissa * 10^exponent.
+  bool is_decimal;
 };
 
 // Provides semantic analysis on a ParseTree.
@@ -45,6 +77,37 @@ class SemanticsIR {
   // Prints the full IR.
   auto Print(llvm::raw_ostream& out) const -> void;
 
+  // Returns the requested callable.
+  auto GetCallable(SemanticsCallableId callable_id) const -> SemanticsCallable {
+    return callables_[callable_id.index];
+  }
+
+  // Returns the requested integer literal.
+  auto GetIntegerLiteral(SemanticsIntegerLiteralId int_id) const
+      -> const llvm::APInt& {
+    return integer_literals_[int_id.index];
+  }
+
+  // Returns the requested node.
+  auto GetNode(SemanticsNodeId node_id) const -> SemanticsNode {
+    return nodes_[node_id.index];
+  }
+
+  // Returns the requested node block.
+  auto GetNodeBlock(SemanticsNodeBlockId block_id) const
+      -> const llvm::SmallVector<SemanticsNodeId>& {
+    return node_blocks_[block_id.index];
+  }
+
+  // Returns the requested string.
+  auto GetString(SemanticsStringId string_id) const -> llvm::StringRef {
+    return strings_[string_id.index];
+  }
+
+  auto top_node_block_id() const -> SemanticsNodeBlockId {
+    return top_node_block_id_;
+  }
+
   // Returns true if there were errors creating the semantics IR.
   auto has_errors() const -> bool { return has_errors_; }
 
@@ -57,16 +120,14 @@ class SemanticsIR {
     node_blocks_.resize(1);
   }
 
-  // Returns the requested node.
-  auto GetNode(SemanticsNodeId node_id) const -> const SemanticsNode& {
-    return nodes_[node_id.index];
+  // Adds a call, returning an ID to reference it.
+  auto AddCall(SemanticsCall call) -> SemanticsCallId {
+    SemanticsCallId id(calls_.size());
+    calls_.push_back(call);
+    return id;
   }
 
-  // Returns the type of the requested node.
-  auto GetType(SemanticsNodeId node_id) -> SemanticsNodeId {
-    return GetNode(node_id).type();
-  }
-
+  // Adds a callable, returning an ID to reference it.
   auto AddCallable(SemanticsCallable callable) -> SemanticsCallableId {
     SemanticsCallableId id(callables_.size());
     callables_.push_back(callable);
@@ -90,6 +151,11 @@ class SemanticsIR {
     return node_id;
   }
 
+  // Returns the type of the requested node.
+  auto GetType(SemanticsNodeId node_id) -> SemanticsNodeId {
+    return GetNode(node_id).type();
+  }
+
   // Adds an empty new node block, returning an ID to reference it and add
   // items.
   auto AddNodeBlock() -> SemanticsNodeBlockId {
@@ -103,10 +169,18 @@ class SemanticsIR {
     return node_blocks_[block_id.index];
   }
 
+  // Adds a real literal, returning an ID to reference it.
+  auto AddRealLiteral(SemanticsRealLiteral real_literal)
+      -> SemanticsRealLiteralId {
+    SemanticsRealLiteralId id(real_literals_.size());
+    real_literals_.push_back(real_literal);
+    return id;
+  }
+
   // Adds an string, returning an ID to reference it.
   auto AddString(llvm::StringRef str) -> SemanticsStringId {
     // If the string has already been stored, return the corresponding ID.
-    if (auto existing_id = GetString(str)) {
+    if (auto existing_id = GetStringID(str)) {
       return *existing_id;
     }
 
@@ -118,7 +192,7 @@ class SemanticsIR {
   }
 
   // Returns an ID for the string if it's previously been stored.
-  auto GetString(llvm::StringRef str) -> std::optional<SemanticsStringId> {
+  auto GetStringID(llvm::StringRef str) -> std::optional<SemanticsStringId> {
     auto str_find = string_to_id_.find(str);
     if (str_find != string_to_id_.end()) {
       return str_find->second;
@@ -127,6 +201,9 @@ class SemanticsIR {
   }
 
   bool has_errors_ = false;
+
+  // Storage for call objects.
+  llvm::SmallVector<SemanticsCall> calls_;
 
   // Storage for callable objects.
   llvm::SmallVector<SemanticsCallable> callables_;
@@ -139,6 +216,9 @@ class SemanticsIR {
   // Storage for integer literals.
   llvm::SmallVector<llvm::APInt> integer_literals_;
 
+  // Storage for real literals.
+  llvm::SmallVector<SemanticsRealLiteral> real_literals_;
+
   // Storage for strings. strings_ provides a list of allocated strings, while
   // string_to_id_ provides a mapping to identify strings.
   llvm::StringMap<SemanticsStringId> string_to_id_;
@@ -150,6 +230,9 @@ class SemanticsIR {
 
   // Storage for blocks within the IR. These reference entries in nodes_.
   llvm::SmallVector<llvm::SmallVector<SemanticsNodeId>> node_blocks_;
+
+  // The top node block ID.
+  SemanticsNodeBlockId top_node_block_id_ = SemanticsNodeBlockId::Invalid;
 };
 
 }  // namespace Carbon

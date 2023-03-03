@@ -236,24 +236,24 @@ auto GetName(const Declaration& declaration)
     -> std::optional<std::string_view> {
   switch (declaration.kind()) {
     case DeclarationKind::NamespaceDeclaration:
-      return cast<NamespaceDeclaration>(declaration).name();
+      return cast<NamespaceDeclaration>(declaration).name().inner_name();
     case DeclarationKind::FunctionDeclaration:
       return cast<FunctionDeclaration>(declaration).name().inner_name();
     case DeclarationKind::DestructorDeclaration:
       return "destructor";
     case DeclarationKind::ClassDeclaration:
-      return cast<ClassDeclaration>(declaration).name();
+      return cast<ClassDeclaration>(declaration).name().inner_name();
     case DeclarationKind::MixinDeclaration: {
-      return cast<MixinDeclaration>(declaration).name();
+      return cast<MixinDeclaration>(declaration).name().inner_name();
     }
     case DeclarationKind::MixDeclaration: {
       return std::nullopt;
     }
     case DeclarationKind::ChoiceDeclaration:
-      return cast<ChoiceDeclaration>(declaration).name();
+      return cast<ChoiceDeclaration>(declaration).name().inner_name();
     case DeclarationKind::InterfaceDeclaration:
     case DeclarationKind::ConstraintDeclaration:
-      return cast<ConstraintTypeDeclaration>(declaration).name();
+      return cast<ConstraintTypeDeclaration>(declaration).name().inner_name();
     case DeclarationKind::VariableDeclaration:
       return cast<VariableDeclaration>(declaration).binding().name();
     case DeclarationKind::AssociatedConstantDeclaration:
@@ -266,7 +266,7 @@ auto GetName(const Declaration& declaration)
     case DeclarationKind::SelfDeclaration:
       return SelfDeclaration::name();
     case DeclarationKind::AliasDeclaration: {
-      return cast<AliasDeclaration>(declaration).name();
+      return cast<AliasDeclaration>(declaration).name().inner_name();
     }
   }
 }
@@ -429,11 +429,24 @@ auto ImplDeclaration::Create(Nonnull<Arena*> arena, SourceLocation source_loc,
 }
 
 void AlternativeSignature::Print(llvm::raw_ostream& out) const {
-  out << "alt " << name() << " " << signature();
+  out << "alt " << name();
+  if (auto params = parameters()) {
+    out << **params;
+  }
 }
 
 void AlternativeSignature::PrintID(llvm::raw_ostream& out) const {
   out << name();
+}
+
+auto ChoiceDeclaration::FindAlternative(std::string_view name) const
+    -> std::optional<const AlternativeSignature*> {
+  for (const auto* alt : alternatives()) {
+    if (alt->name() == name) {
+      return alt;
+    }
+  }
+  return std::nullopt;
 }
 
 }  // namespace Carbon

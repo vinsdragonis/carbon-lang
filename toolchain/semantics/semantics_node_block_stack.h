@@ -7,7 +7,6 @@
 
 #include <type_traits>
 
-#include "common/check.h"
 #include "llvm/ADT/SmallVector.h"
 #include "toolchain/semantics/semantics_node.h"
 
@@ -19,9 +18,10 @@ namespace Carbon {
 class SemanticsNodeBlockStack {
  public:
   explicit SemanticsNodeBlockStack(
+      llvm::StringLiteral name,
       llvm::SmallVector<llvm::SmallVector<SemanticsNodeId>>& node_blocks,
       llvm::raw_ostream* vlog_stream)
-      : node_blocks_(&node_blocks), vlog_stream_(vlog_stream) {}
+      : name_(name), node_blocks_(&node_blocks), vlog_stream_(vlog_stream) {}
 
   // Pushes a new node block. It will be invalid unless PeekForAdd is called in
   // order to support lazy allocation.
@@ -45,6 +45,9 @@ class SemanticsNodeBlockStack {
   auto size() const -> size_t { return stack_.size(); }
 
  private:
+  // A name for debugging.
+  llvm::StringLiteral name_;
+
   // The underlying node block storage on SemanticsIR. Always non-null.
   llvm::SmallVector<llvm::SmallVector<SemanticsNodeId>>* const node_blocks_;
 

@@ -21,6 +21,8 @@
 #include "explorer/interpreter/dictionary.h"
 #include "explorer/interpreter/impl_scope.h"
 #include "explorer/interpreter/interpreter.h"
+#include "explorer/interpreter/matching_impl_set.h"
+#include "explorer/interpreter/trace_stream.h"
 #include "explorer/interpreter/value.h"
 
 namespace Carbon {
@@ -34,7 +36,7 @@ using GlobalMembersMap =
 class TypeChecker {
  public:
   explicit TypeChecker(Nonnull<Arena*> arena,
-                       std::optional<Nonnull<llvm::raw_ostream*>> trace_stream)
+                       Nonnull<TraceStream*> trace_stream)
       : arena_(arena), trace_stream_(trace_stream) {}
 
   // Type-checks `ast` and sets properties such as `static_type`, as documented
@@ -63,7 +65,7 @@ class TypeChecker {
   auto MatchImpl(const InterfaceType& iface, Nonnull<const Value*> type,
                  const ImplScope::Impl& impl, const ImplScope& impl_scope,
                  SourceLocation source_loc) const
-      -> std::optional<Nonnull<const Witness*>>;
+      -> ErrorOr<std::optional<Nonnull<const Witness*>>>;
 
   // Return the declaration of the member with the given name and the class type
   // that owns it, from the class and its parents
@@ -408,15 +410,6 @@ class TypeChecker {
   auto IsSameType(Nonnull<const Value*> type1, Nonnull<const Value*> type2,
                   const ImplScope& impl_scope) const -> bool;
 
-  // Check whether `actual` is implicitly convertible to `expected`
-  // and halt with a fatal compilation error if it is not.
-  //
-  // TODO: Does not actually perform the conversion if a user-defined
-  // conversion is needed. Should be used very rarely for that reason.
-  auto ExpectType(SourceLocation source_loc, std::string_view context,
-                  Nonnull<const Value*> expected, Nonnull<const Value*> actual,
-                  const ImplScope& impl_scope) const -> ErrorOr<Success>;
-
   // Check whether `actual` is the same type as `expected` and halt with a
   // fatal compilation error if it is not.
   auto ExpectExactType(SourceLocation source_loc, std::string_view context,
@@ -515,7 +508,7 @@ class TypeChecker {
   // Maps a mixin/class declaration to all of its direct and indirect members.
   GlobalMembersMap collected_members_;
 
-  std::optional<Nonnull<llvm::raw_ostream*>> trace_stream_;
+  Nonnull<TraceStream*> trace_stream_;
 
   // The top-level ImplScope, containing `impl` declarations that should be
   // usable from any context. This is used when we want to try to refine a
@@ -525,6 +518,12 @@ class TypeChecker {
   // Constraint types that are currently being resolved. These may have
   // rewrites that are not yet visible in any type.
   std::vector<ConstraintTypeBuilder*> partial_constraint_types_;
+
+  // A set of impls we're currently matching.
+  // TODO: This is `mutable` because `MatchImpl` is `const`. We need to remove
+  // the `const`s from everywhere that transitively does `impl` matching to get
+  // rid of this `mutable`.
+  mutable MatchingImplSet matching_impl_set_;
 };
 
 }  // namespace Carbon

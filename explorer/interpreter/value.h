@@ -26,6 +26,8 @@ namespace Carbon {
 
 class Action;
 class AssociatedConstant;
+class ChoiceType;
+class TupleValue;
 
 // A trait type that describes how to allocate an instance of `T` in an arena.
 // Returns the created object, which is not required to be of type `T`.
@@ -142,25 +144,17 @@ class IntValue : public Value {
   int value_;
 };
 
-// A function value.
-class FunctionValue : public Value {
+// A function or bound method value.
+class FunctionOrMethodValue : public Value {
  public:
-  explicit FunctionValue(Nonnull<const FunctionDeclaration*> declaration)
-      : Value(Kind::FunctionValue), declaration_(declaration) {}
-
-  explicit FunctionValue(Nonnull<const FunctionDeclaration*> declaration,
-                         Nonnull<const Bindings*> bindings)
-      : Value(Kind::FunctionValue),
-        declaration_(declaration),
-        bindings_(bindings) {}
+  explicit FunctionOrMethodValue(
+      Kind kind, Nonnull<const FunctionDeclaration*> declaration,
+      Nonnull<const Bindings*> bindings)
+      : Value(kind), declaration_(declaration), bindings_(bindings) {}
 
   static auto classof(const Value* value) -> bool {
-    return value->kind() == Kind::FunctionValue;
-  }
-
-  template <typename F>
-  auto Decompose(F f) const {
-    return f(declaration_, bindings_);
+    return value->kind() == Kind::FunctionValue ||
+           value->kind() == Kind::BoundMethodValue;
   }
 
   auto declaration() const -> const FunctionDeclaration& {
@@ -177,7 +171,48 @@ class FunctionValue : public Value {
 
  private:
   Nonnull<const FunctionDeclaration*> declaration_;
-  Nonnull<const Bindings*> bindings_ = Bindings::None();
+  Nonnull<const Bindings*> bindings_;
+};
+
+// A function value.
+class FunctionValue : public FunctionOrMethodValue {
+ public:
+  explicit FunctionValue(Nonnull<const FunctionDeclaration*> declaration,
+                         Nonnull<const Bindings*> bindings)
+      : FunctionOrMethodValue(Kind::FunctionValue, declaration, bindings) {}
+
+  static auto classof(const Value* value) -> bool {
+    return value->kind() == Kind::FunctionValue;
+  }
+
+  template <typename F>
+  auto Decompose(F f) const {
+    return f(&declaration(), &bindings());
+  }
+};
+
+// A bound method value. It includes the receiver object.
+class BoundMethodValue : public FunctionOrMethodValue {
+ public:
+  explicit BoundMethodValue(Nonnull<const FunctionDeclaration*> declaration,
+                            Nonnull<const Value*> receiver,
+                            Nonnull<const Bindings*> bindings)
+      : FunctionOrMethodValue(Kind::BoundMethodValue, declaration, bindings),
+        receiver_(receiver) {}
+
+  static auto classof(const Value* value) -> bool {
+    return value->kind() == Kind::BoundMethodValue;
+  }
+
+  template <typename F>
+  auto Decompose(F f) const {
+    return f(&declaration(), receiver_, &bindings());
+  }
+
+  auto receiver() const -> Nonnull<const Value*> { return receiver_; }
+
+ private:
+  Nonnull<const Value*> receiver_;
 };
 
 // A destructor value.
@@ -201,52 +236,6 @@ class DestructorValue : public Value {
 
  private:
   Nonnull<const DestructorDeclaration*> declaration_;
-};
-
-// A bound method value. It includes the receiver object.
-class BoundMethodValue : public Value {
- public:
-  explicit BoundMethodValue(Nonnull<const FunctionDeclaration*> declaration,
-                            Nonnull<const Value*> receiver)
-      : Value(Kind::BoundMethodValue),
-        declaration_(declaration),
-        receiver_(receiver) {}
-
-  explicit BoundMethodValue(Nonnull<const FunctionDeclaration*> declaration,
-                            Nonnull<const Value*> receiver,
-                            Nonnull<const Bindings*> bindings)
-      : Value(Kind::BoundMethodValue),
-        declaration_(declaration),
-        receiver_(receiver),
-        bindings_(bindings) {}
-
-  static auto classof(const Value* value) -> bool {
-    return value->kind() == Kind::BoundMethodValue;
-  }
-
-  template <typename F>
-  auto Decompose(F f) const {
-    return f(declaration_, receiver_, bindings_);
-  }
-
-  auto declaration() const -> const FunctionDeclaration& {
-    return *declaration_;
-  }
-
-  auto receiver() const -> Nonnull<const Value*> { return receiver_; }
-
-  auto bindings() const -> const Bindings& { return *bindings_; }
-
-  auto type_args() const -> const BindingMap& { return bindings_->args(); }
-
-  auto witnesses() const -> const ImplWitnessMap& {
-    return bindings_->witnesses();
-  }
-
- private:
-  Nonnull<const FunctionDeclaration*> declaration_;
-  Nonnull<const Value*> receiver_;
-  Nonnull<const Bindings*> bindings_ = Bindings::None();
 };
 
 // The value of a location in memory.
@@ -368,7 +357,7 @@ class NominalClassValue : public Value {
     return base_;
   }
   // Returns a pointer of pointer to the child-most class value.
-  auto class_value_ptr() const -> Nonnull<const NominalClassValue** const> {
+  auto class_value_ptr() const -> Nonnull<const NominalClassValue**> {
     return class_value_ptr_;
   }
 
@@ -382,11 +371,11 @@ class NominalClassValue : public Value {
 // An alternative constructor value.
 class AlternativeConstructorValue : public Value {
  public:
-  AlternativeConstructorValue(std::string_view alt_name,
-                              std::string_view choice_name)
+  AlternativeConstructorValue(Nonnull<const ChoiceType*> choice,
+                              Nonnull<const AlternativeSignature*> alternative)
       : Value(Kind::AlternativeConstructorValue),
-        alt_name_(alt_name),
-        choice_name_(choice_name) {}
+        choice_(choice),
+        alternative_(alternative) {}
 
   static auto classof(const Value* value) -> bool {
     return value->kind() == Kind::AlternativeConstructorValue;
@@ -394,25 +383,28 @@ class AlternativeConstructorValue : public Value {
 
   template <typename F>
   auto Decompose(F f) const {
-    return f(alt_name_, choice_name_);
+    return f(&choice(), &alternative());
   }
 
-  auto alt_name() const -> const std::string& { return alt_name_; }
-  auto choice_name() const -> const std::string& { return choice_name_; }
+  auto choice() const -> const ChoiceType& { return *choice_; }
+  auto alternative() const -> const AlternativeSignature& {
+    return *alternative_;
+  }
 
  private:
-  std::string alt_name_;
-  std::string choice_name_;
+  Nonnull<const ChoiceType*> choice_;
+  Nonnull<const AlternativeSignature*> alternative_;
 };
 
 // An alternative value.
 class AlternativeValue : public Value {
  public:
-  AlternativeValue(std::string_view alt_name, std::string_view choice_name,
-                   Nonnull<const Value*> argument)
+  AlternativeValue(Nonnull<const ChoiceType*> choice,
+                   Nonnull<const AlternativeSignature*> alternative,
+                   std::optional<Nonnull<const TupleValue*>> argument)
       : Value(Kind::AlternativeValue),
-        alt_name_(alt_name),
-        choice_name_(choice_name),
+        choice_(choice),
+        alternative_(alternative),
         argument_(argument) {}
 
   static auto classof(const Value* value) -> bool {
@@ -421,17 +413,21 @@ class AlternativeValue : public Value {
 
   template <typename F>
   auto Decompose(F f) const {
-    return f(alt_name_, choice_name_, argument_);
+    return f(&choice(), &alternative(), argument_);
   }
 
-  auto alt_name() const -> const std::string& { return alt_name_; }
-  auto choice_name() const -> const std::string& { return choice_name_; }
-  auto argument() const -> const Value& { return *argument_; }
+  auto choice() const -> const ChoiceType& { return *choice_; }
+  auto alternative() const -> const AlternativeSignature& {
+    return *alternative_;
+  }
+  auto argument() const -> std::optional<Nonnull<const TupleValue*>> {
+    return argument_;
+  }
 
  private:
-  std::string alt_name_;
-  std::string choice_name_;
-  Nonnull<const Value*> argument_;
+  Nonnull<const ChoiceType*> choice_;
+  Nonnull<const AlternativeSignature*> alternative_;
+  std::optional<Nonnull<const TupleValue*>> argument_;
 };
 
 // Base class for tuple types and tuple values. These are the same other than
@@ -1249,13 +1245,6 @@ class ChoiceType : public Value {
   auto Decompose(F f) const {
     return f(declaration_, bindings_);
   }
-
-  auto name() const -> const std::string& { return declaration_->name(); }
-
-  // Returns the parameter types of the alternative with the given name,
-  // or nullopt if no such alternative is present.
-  auto FindAlternative(std::string_view name) const
-      -> std::optional<Nonnull<const Value*>>;
 
   auto bindings() const -> const Bindings& { return *bindings_; }
 
