@@ -10,10 +10,11 @@
 
 #include "common/ostream.h"
 #include "explorer/ast/ast_node.h"
+#include "explorer/ast/clone_context.h"
 #include "explorer/ast/expression.h"
+#include "explorer/ast/expression_category.h"
 #include "explorer/ast/pattern.h"
 #include "explorer/ast/return_term.h"
-#include "explorer/ast/value_category.h"
 #include "explorer/ast/value_node.h"
 #include "explorer/common/arena.h"
 #include "explorer/common/source_location.h"
@@ -43,8 +44,11 @@ class Statement : public AstNode {
   }
 
  protected:
-  Statement(AstNodeKind kind, SourceLocation source_loc)
+  explicit Statement(AstNodeKind kind, SourceLocation source_loc)
       : AstNode(kind, source_loc) {}
+
+  explicit Statement(CloneContext& context, const Statement& other)
+      : AstNode(context, other) {}
 };
 
 class Block : public Statement {
@@ -52,6 +56,10 @@ class Block : public Statement {
   Block(SourceLocation source_loc, std::vector<Nonnull<Statement*>> statements)
       : Statement(AstNodeKind::Block, source_loc),
         statements_(std::move(statements)) {}
+
+  explicit Block(CloneContext& context, const Block& other)
+      : Statement(context, other),
+        statements_(context.Clone(other.statements_)) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromBlock(node->kind());
@@ -74,6 +82,11 @@ class ExpressionStatement : public Statement {
                       Nonnull<Expression*> expression)
       : Statement(AstNodeKind::ExpressionStatement, source_loc),
         expression_(expression) {}
+
+  explicit ExpressionStatement(CloneContext& context,
+                               const ExpressionStatement& other)
+      : Statement(context, other),
+        expression_(context.Clone(other.expression_)) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromExpressionStatement(node->kind());
@@ -111,6 +124,13 @@ class Assign : public Statement {
         lhs_(lhs),
         rhs_(rhs),
         op_(op) {}
+
+  explicit Assign(CloneContext& context, const Assign& other)
+      : Statement(context, other),
+        lhs_(context.Clone(other.lhs_)),
+        rhs_(context.Clone(other.rhs_)),
+        op_(other.op_),
+        rewritten_form_(context.Clone(other.rewritten_form_)) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromAssign(node->kind());
@@ -156,6 +176,13 @@ class IncrementDecrement : public Statement {
         argument_(argument),
         is_increment_(is_increment) {}
 
+  explicit IncrementDecrement(CloneContext& context,
+                              const IncrementDecrement& other)
+      : Statement(context, other),
+        argument_(context.Clone(other.argument_)),
+        is_increment_(other.is_increment_),
+        rewritten_form_(context.Clone(other.rewritten_form_)) {}
+
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromIncrementDecrement(node->kind());
   }
@@ -192,12 +219,21 @@ class VariableDefinition : public Statement {
 
   VariableDefinition(SourceLocation source_loc, Nonnull<Pattern*> pattern,
                      std::optional<Nonnull<Expression*>> init,
-                     ValueCategory value_category, DefinitionType def_type)
+                     ExpressionCategory expression_category,
+                     DefinitionType def_type)
       : Statement(AstNodeKind::VariableDefinition, source_loc),
         pattern_(pattern),
         init_(init),
-        value_category_(value_category),
+        expression_category_(expression_category),
         def_type_(def_type) {}
+
+  explicit VariableDefinition(CloneContext& context,
+                              const VariableDefinition& other)
+      : Statement(context, other),
+        pattern_(context.Clone(other.pattern_)),
+        init_(context.Clone(other.init_)),
+        expression_category_(other.expression_category_),
+        def_type_(other.def_type_) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromVariableDefinition(node->kind());
@@ -223,14 +259,16 @@ class VariableDefinition : public Statement {
     init_ = init;
   }
 
-  auto value_category() const -> ValueCategory { return value_category_; }
+  auto expression_category() const -> ExpressionCategory {
+    return expression_category_;
+  }
 
   auto is_returned() const -> bool { return def_type_ == Returned; };
 
  private:
   Nonnull<Pattern*> pattern_;
   std::optional<Nonnull<Expression*>> init_;
-  ValueCategory value_category_;
+  ExpressionCategory expression_category_;
   const DefinitionType def_type_;
 };
 
@@ -242,6 +280,12 @@ class If : public Statement {
         condition_(condition),
         then_block_(then_block),
         else_block_(else_block) {}
+
+  explicit If(CloneContext& context, const If& other)
+      : Statement(context, other),
+        condition_(context.Clone(other.condition_)),
+        then_block_(context.Clone(other.then_block_)),
+        else_block_(context.Clone(other.else_block_)) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromIf(node->kind());
@@ -290,6 +334,8 @@ class Return : public Statement {
   Return(AstNodeKind node_kind, SourceLocation source_loc)
       : Statement(node_kind, source_loc) {}
 
+  explicit Return(CloneContext& context, const Return& other);
+
  private:
   std::optional<Nonnull<CallableDeclaration*>> function_;
 };
@@ -298,6 +344,9 @@ class ReturnVar : public Return {
  public:
   explicit ReturnVar(SourceLocation source_loc)
       : Return(AstNodeKind::ReturnVar, source_loc) {}
+
+  explicit ReturnVar(CloneContext& context, const ReturnVar& other)
+      : Return(context, other), value_node_(context.Clone(other.value_node_)) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromReturnVar(node->kind());
@@ -329,6 +378,12 @@ class ReturnExpression : public Return {
         expression_(expression),
         is_omitted_expression_(is_omitted_expression) {}
 
+  explicit ReturnExpression(CloneContext& context,
+                            const ReturnExpression& other)
+      : Return(context, other),
+        expression_(context.Clone(other.expression_)),
+        is_omitted_expression_(other.is_omitted_expression_) {}
+
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromReturnExpression(node->kind());
   }
@@ -355,6 +410,11 @@ class While : public Statement {
         condition_(condition),
         body_(body) {}
 
+  explicit While(CloneContext& context, const While& other)
+      : Statement(context, other),
+        condition_(context.Clone(other.condition_)),
+        body_(context.Clone(other.body_)) {}
+
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromWhile(node->kind());
   }
@@ -380,6 +440,12 @@ class For : public Statement {
         variable_declaration_(variable_declaration),
         loop_target_(loop_target),
         body_(body) {}
+
+  explicit For(CloneContext& context, const For& other)
+      : Statement(context, other),
+        variable_declaration_(context.Clone(other.variable_declaration_)),
+        loop_target_(context.Clone(other.loop_target_)),
+        body_(context.Clone(other.body_)) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromFor(node->kind());
@@ -409,6 +475,9 @@ class Break : public Statement {
   explicit Break(SourceLocation source_loc)
       : Statement(AstNodeKind::Break, source_loc) {}
 
+  explicit Break(CloneContext& context, const Break& other)
+      : Statement(context, other), loop_(context.Clone(other.loop_)) {}
+
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromBreak(node->kind());
   }
@@ -436,6 +505,9 @@ class Continue : public Statement {
   explicit Continue(SourceLocation source_loc)
       : Statement(AstNodeKind::Continue, source_loc) {}
 
+  explicit Continue(CloneContext& context, const Continue& other)
+      : Statement(context, other), loop_(context.Clone(other.loop_)) {}
+
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromContinue(node->kind());
   }
@@ -462,8 +534,12 @@ class Match : public Statement {
  public:
   class Clause {
    public:
-    Clause(Nonnull<Pattern*> pattern, Nonnull<Statement*> statement)
+    explicit Clause(Nonnull<Pattern*> pattern, Nonnull<Statement*> statement)
         : pattern_(pattern), statement_(statement) {}
+
+    explicit Clause(CloneContext& context, const Clause& other)
+        : pattern_(context.Clone(other.pattern_)),
+          statement_(context.Clone(other.statement_)) {}
 
     auto pattern() const -> const Pattern& { return *pattern_; }
     auto pattern() -> Pattern& { return *pattern_; }
@@ -480,6 +556,11 @@ class Match : public Statement {
       : Statement(AstNodeKind::Match, source_loc),
         expression_(expression),
         clauses_(std::move(clauses)) {}
+
+  explicit Match(CloneContext& context, const Match& other)
+      : Statement(context, other),
+        expression_(context.Clone(other.expression_)),
+        clauses_(context.Clone(other.clauses_)) {}
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromMatch(node->kind());
@@ -498,91 +579,6 @@ class Match : public Statement {
  private:
   Nonnull<Expression*> expression_;
   std::vector<Clause> clauses_;
-};
-
-// A continuation statement.
-//
-//     __continuation <continuation_variable> {
-//       <body>
-//     }
-class Continuation : public Statement {
- public:
-  using ImplementsCarbonValueNode = void;
-
-  Continuation(SourceLocation source_loc, std::string name,
-               Nonnull<Block*> body)
-      : Statement(AstNodeKind::Continuation, source_loc),
-        name_(std::move(name)),
-        body_(body) {}
-
-  static auto classof(const AstNode* node) -> bool {
-    return InheritsFromContinuation(node->kind());
-  }
-
-  auto name() const -> const std::string& { return name_; }
-  auto body() const -> const Block& { return *body_; }
-  auto body() -> Block& { return *body_; }
-
-  // The static type of the continuation. Cannot be called before typechecking.
-  //
-  // This will always be ContinuationType, but we must set it dynamically in
-  // the typechecker because this code can't depend on ContinuationType.
-  auto static_type() const -> const Value& { return **static_type_; }
-
-  // Sets the static type of the continuation. Can only be called once,
-  // during typechecking.
-  void set_static_type(Nonnull<const Value*> type) {
-    CARBON_CHECK(!static_type_.has_value());
-    static_type_ = type;
-  }
-
-  auto value_category() const -> ValueCategory { return ValueCategory::Var; }
-  auto constant_value() const -> std::optional<Nonnull<const Value*>> {
-    return std::nullopt;
-  }
-  auto symbolic_identity() const -> std::optional<Nonnull<const Value*>> {
-    return std::nullopt;
-  }
-
- private:
-  std::string name_;
-  Nonnull<Block*> body_;
-  std::optional<Nonnull<const Value*>> static_type_;
-};
-
-// A run statement.
-//
-//     __run <argument>;
-class Run : public Statement {
- public:
-  Run(SourceLocation source_loc, Nonnull<Expression*> argument)
-      : Statement(AstNodeKind::Run, source_loc), argument_(argument) {}
-
-  static auto classof(const AstNode* node) -> bool {
-    return InheritsFromRun(node->kind());
-  }
-
-  auto argument() const -> const Expression& { return *argument_; }
-  auto argument() -> Expression& { return *argument_; }
-
-  // Can only be called by type-checking, if a conversion was required.
-  void set_argument(Nonnull<Expression*> argument) { argument_ = argument; }
-
- private:
-  Nonnull<Expression*> argument_;
-};
-
-// An await statement.
-//
-//    __await;
-class Await : public Statement {
- public:
-  explicit Await(SourceLocation source_loc)
-      : Statement(AstNodeKind::Await, source_loc) {}
-
-  static auto classof(const AstNode* node) -> bool {
-    return InheritsFromAwait(node->kind());
-  }
 };
 
 }  // namespace Carbon

@@ -9,9 +9,9 @@
 
 #include "common/ostream.h"
 #include "explorer/ast/declaration.h"
+#include "explorer/ast/value.h"
 #include "explorer/common/nonnull.h"
 #include "explorer/interpreter/impl_scope.h"
-#include "explorer/interpreter/value.h"
 #include "llvm/ADT/DenseMap.h"
 
 namespace Carbon {
@@ -44,7 +44,7 @@ class MatchingImplSet {
   class Match {
    public:
     explicit Match(Nonnull<MatchingImplSet*> parent,
-                   Nonnull<const ImplScope::Impl*> impl,
+                   Nonnull<const ImplScope::ImplFact*> impl,
                    Nonnull<const Value*> type, Nonnull<const Value*> interface);
     ~Match();
 
@@ -63,7 +63,7 @@ class MatchingImplSet {
     // The set that this match is part of.
     Nonnull<MatchingImplSet*> parent_;
     // The `impl` that is being matched against.
-    Nonnull<const ImplScope::Impl*> impl_;
+    Nonnull<const ImplScope::ImplFact*> impl_;
     // The type that is being matched against the impl.
     Nonnull<const Value*> type_;
     // The interface that is being matched against the impl.

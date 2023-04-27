@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "explorer/ast/pattern.h"
+#include "explorer/ast/value.h"
 #include "explorer/common/arena.h"
 #include "explorer/common/error_builders.h"
 #include "llvm/ADT/StringExtras.h"
@@ -299,7 +300,6 @@ void Expression::Print(llvm::raw_ostream& out) const {
     case ExpressionKind::StringLiteral:
     case ExpressionKind::StringTypeLiteral:
     case ExpressionKind::TypeTypeLiteral:
-    case ExpressionKind::ContinuationTypeLiteral:
     case ExpressionKind::ValueLiteral:
       PrintID(out);
       break;
@@ -337,12 +337,11 @@ void Expression::PrintID(llvm::raw_ostream& out) const {
     case ExpressionKind::TypeTypeLiteral:
       out << "type";
       break;
-    case ExpressionKind::ContinuationTypeLiteral:
-      out << "Continuation";
-      break;
+    case ExpressionKind::FunctionTypeLiteral:
+    case ExpressionKind::StructLiteral:
+    case ExpressionKind::ArrayTypeLiteral:
     case ExpressionKind::ValueLiteral:
-      // TODO: For layering reasons, we can't print out the value from here.
-      out << "ValueLiteral";
+      out << cast<ConstantValueLiteral>(*this).constant_value();
       break;
     case ExpressionKind::IndexExpression:
     case ExpressionKind::SimpleMemberAccessExpression:
@@ -352,26 +351,52 @@ void Expression::PrintID(llvm::raw_ostream& out) const {
     case ExpressionKind::WhereExpression:
     case ExpressionKind::BuiltinConvertExpression:
     case ExpressionKind::TupleLiteral:
-    case ExpressionKind::StructLiteral:
     case ExpressionKind::StructTypeLiteral:
     case ExpressionKind::CallExpression:
     case ExpressionKind::OperatorExpression:
     case ExpressionKind::IntrinsicExpression:
     case ExpressionKind::UnimplementedExpression:
-    case ExpressionKind::FunctionTypeLiteral:
-    case ExpressionKind::ArrayTypeLiteral:
       out << "...";
       break;
   }
 }
 
+DotSelfExpression::DotSelfExpression(CloneContext& context,
+                                     const DotSelfExpression& other)
+    : Expression(context, other),
+      name_(other.name_),
+      self_binding_(context.Remap(other.self_binding_)) {}
+
+MemberAccessExpression::MemberAccessExpression(
+    CloneContext& context, const MemberAccessExpression& other)
+    : Expression(context, other),
+      object_(context.Clone(other.object_)),
+      is_type_access_(other.is_type_access_),
+      is_addr_me_method_(other.is_addr_me_method_),
+      impl_(context.Clone(other.impl_)),
+      constant_value_(context.Clone(other.constant_value_)) {}
+
+SimpleMemberAccessExpression::SimpleMemberAccessExpression(
+    CloneContext& context, const SimpleMemberAccessExpression& other)
+    : RewritableMixin(context, other),
+      member_name_(other.member_name_),
+      member_(context.Clone(other.member_)),
+      found_in_interface_(context.Clone(other.found_in_interface_)),
+      value_node_(context.Clone(other.value_node_)) {}
+
+CompoundMemberAccessExpression::CompoundMemberAccessExpression(
+    CloneContext& context, const CompoundMemberAccessExpression& other)
+    : MemberAccessExpression(context, other),
+      path_(context.Clone(other.path_)),
+      member_(context.Clone(other.member_)) {}
+
 WhereClause::~WhereClause() = default;
 
 void WhereClause::Print(llvm::raw_ostream& out) const {
   switch (kind()) {
-    case WhereClauseKind::IsWhereClause: {
-      const auto& clause = cast<IsWhereClause>(*this);
-      out << clause.type() << " is " << clause.constraint();
+    case WhereClauseKind::ImplsWhereClause: {
+      const auto& clause = cast<ImplsWhereClause>(*this);
+      out << clause.type() << " impls " << clause.constraint();
       break;
     }
     case WhereClauseKind::EqualsWhereClause: {
@@ -388,5 +413,12 @@ void WhereClause::Print(llvm::raw_ostream& out) const {
 }
 
 void WhereClause::PrintID(llvm::raw_ostream& out) const { out << "..."; }
+
+WhereExpression::WhereExpression(CloneContext& context,
+                                 const WhereExpression& other)
+    : RewritableMixin(context, other),
+      self_binding_(context.Clone(other.self_binding_)),
+      clauses_(context.Clone(other.clauses_)),
+      enclosing_dot_self_(context.Remap(other.enclosing_dot_self_)) {}
 
 }  // namespace Carbon

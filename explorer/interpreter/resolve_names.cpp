@@ -227,7 +227,9 @@ auto NameResolver::AddExposedNames(const Declaration& declaration,
     case DeclarationKind::AssociatedConstantDeclaration: {
       const auto& let = cast<AssociatedConstantDeclaration>(declaration);
       if (let.binding().name() != AnonymousName) {
-        CARBON_RETURN_IF_ERROR(enclosing_scope.Add(let.binding().name(), &let));
+        CARBON_RETURN_IF_ERROR(
+            enclosing_scope.Add(let.binding().name(), &let,
+                                StaticScope::NameStatus::KnownButNotDeclared));
       }
       break;
     }
@@ -273,15 +275,26 @@ auto NameResolver::ResolveNames(Expression& expression,
       break;
     }
     case ExpressionKind::SimpleMemberAccessExpression: {
+      // If the left-hand side of the `.` is a namespace or alias to namespace,
+      // resolve the name.
       auto& access = cast<SimpleMemberAccessExpression>(expression);
       CARBON_ASSIGN_OR_RETURN(std::optional<ValueNodeView> scope,
                               ResolveNames(access.object(), enclosing_scope));
+      if (!scope) {
+        break;
+      }
 
-      // If the left-hand side of the `.` is a namespace, resolve the name.
-      // TODO: Look through aliases.
-      if (scope && isa<NamespaceDeclaration>(scope->base())) {
-        auto ns_it =
-            namespace_scopes_.find(&cast<NamespaceDeclaration>(scope->base()));
+      Nonnull<const AstNode*> base = &scope->base();
+      // recursively resolve aliases.
+      while (const auto* alias = dyn_cast<AliasDeclaration>(base)) {
+        if (auto resolved = alias->resolved_declaration()) {
+          base = *resolved;
+        } else {
+          break;
+        }
+      }
+      if (const auto* namespace_decl = dyn_cast<NamespaceDeclaration>(base)) {
+        auto ns_it = namespace_scopes_.find(namespace_decl);
         CARBON_CHECK(ns_it != namespace_scopes_.end())
             << "name resolved to undeclared namespace";
         CARBON_ASSIGN_OR_RETURN(
@@ -318,19 +331,32 @@ auto NameResolver::ResolveNames(Expression& expression,
         CARBON_RETURN_IF_ERROR(ResolveNames(*field, enclosing_scope));
       }
       break;
-    case ExpressionKind::StructLiteral:
+    case ExpressionKind::StructLiteral: {
+      std::set<std::string_view> member_names;
       for (FieldInitializer& init : cast<StructLiteral>(expression).fields()) {
         CARBON_RETURN_IF_ERROR(
             ResolveNames(init.expression(), enclosing_scope));
+        if (!member_names.insert(init.name()).second) {
+          return ProgramError(init.expression().source_loc())
+                 << "Duplicate name `" << init.name() << "` in struct literal";
+        }
       }
       break;
-    case ExpressionKind::StructTypeLiteral:
+    }
+    case ExpressionKind::StructTypeLiteral: {
+      std::set<std::string_view> member_names;
       for (FieldInitializer& init :
            cast<StructTypeLiteral>(expression).fields()) {
         CARBON_RETURN_IF_ERROR(
             ResolveNames(init.expression(), enclosing_scope));
+        if (!member_names.insert(init.name()).second) {
+          return ProgramError(init.expression().source_loc())
+                 << "Duplicate name `" << init.name()
+                 << "` in struct type literal";
+        }
       }
       break;
+    }
     case ExpressionKind::IdentifierExpression: {
       auto& identifier = cast<IdentifierExpression>(expression);
       CARBON_ASSIGN_OR_RETURN(
@@ -393,7 +419,6 @@ auto NameResolver::ResolveNames(Expression& expression,
     case ExpressionKind::BoolTypeLiteral:
     case ExpressionKind::BoolLiteral:
     case ExpressionKind::IntTypeLiteral:
-    case ExpressionKind::ContinuationTypeLiteral:
     case ExpressionKind::IntLiteral:
     case ExpressionKind::StringLiteral:
     case ExpressionKind::StringTypeLiteral:
@@ -413,11 +438,12 @@ auto NameResolver::ResolveNames(WhereClause& clause,
                                 const StaticScope& enclosing_scope)
     -> ErrorOr<Success> {
   switch (clause.kind()) {
-    case WhereClauseKind::IsWhereClause: {
-      auto& is_clause = cast<IsWhereClause>(clause);
-      CARBON_RETURN_IF_ERROR(ResolveNames(is_clause.type(), enclosing_scope));
+    case WhereClauseKind::ImplsWhereClause: {
+      auto& impls_clause = cast<ImplsWhereClause>(clause);
       CARBON_RETURN_IF_ERROR(
-          ResolveNames(is_clause.constraint(), enclosing_scope));
+          ResolveNames(impls_clause.type(), enclosing_scope));
+      CARBON_RETURN_IF_ERROR(
+          ResolveNames(impls_clause.constraint(), enclosing_scope));
       break;
     }
     case WhereClauseKind::EqualsWhereClause: {
@@ -599,22 +625,6 @@ auto NameResolver::ResolveNames(Statement& statement,
       }
       break;
     }
-    case StatementKind::Continuation: {
-      auto& continuation = cast<Continuation>(statement);
-      CARBON_RETURN_IF_ERROR(
-          enclosing_scope.Add(continuation.name(), &continuation,
-                              StaticScope::NameStatus::DeclaredButNotUsable));
-      StaticScope continuation_scope(&enclosing_scope);
-      CARBON_RETURN_IF_ERROR(ResolveNames(cast<Continuation>(statement).body(),
-                                          continuation_scope));
-      enclosing_scope.MarkUsable(continuation.name());
-      break;
-    }
-    case StatementKind::Run:
-      CARBON_RETURN_IF_ERROR(
-          ResolveNames(cast<Run>(statement).argument(), enclosing_scope));
-      break;
-    case StatementKind::Await:
     case StatementKind::Break:
     case StatementKind::Continue:
       break;
@@ -697,7 +707,8 @@ auto NameResolver::ResolveNames(Declaration& declaration,
     }
     case DeclarationKind::MatchFirstDeclaration: {
       // A `match_first` declaration does not introduce a scope.
-      for (auto* impl : cast<MatchFirstDeclaration>(declaration).impls()) {
+      for (auto* impl :
+           cast<MatchFirstDeclaration>(declaration).impl_declarations()) {
         CARBON_RETURN_IF_ERROR(ResolveNames(*impl, enclosing_scope, bodies));
       }
       break;
@@ -827,7 +838,9 @@ auto NameResolver::ResolveNames(Declaration& declaration,
     case DeclarationKind::AssociatedConstantDeclaration: {
       auto& let = cast<AssociatedConstantDeclaration>(declaration);
       StaticScope constant_scope(&enclosing_scope);
+      enclosing_scope.MarkDeclared(let.binding().name());
       CARBON_RETURN_IF_ERROR(ResolveNames(let.binding(), constant_scope));
+      enclosing_scope.MarkUsable(let.binding().name());
       break;
     }
 
@@ -840,7 +853,17 @@ auto NameResolver::ResolveNames(Declaration& declaration,
       CARBON_ASSIGN_OR_RETURN(Nonnull<StaticScope*> scope,
                               ResolveQualifier(alias.name(), enclosing_scope));
       scope->MarkDeclared(alias.name().inner_name());
-      CARBON_RETURN_IF_ERROR(ResolveNames(alias.target(), *scope));
+      CARBON_ASSIGN_OR_RETURN(auto target,
+                              ResolveNames(alias.target(), *scope));
+      if (target && isa<Declaration>(target->base())) {
+        if (alias.resolved_declaration()) {
+          // Skip if the declaration is already resolved in a previous name
+          // resolution phase.
+          CARBON_CHECK(*alias.resolved_declaration() == &target->base());
+        } else {
+          alias.set_resolved_declaration(&cast<Declaration>(target->base()));
+        }
+      }
       scope->MarkUsable(alias.name().inner_name());
       break;
     }

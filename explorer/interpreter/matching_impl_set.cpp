@@ -5,11 +5,11 @@
 #include "common/check.h"
 #include "common/error.h"
 #include "explorer/ast/declaration.h"
+#include "explorer/ast/value.h"
 #include "explorer/common/error_builders.h"
 #include "explorer/common/nonnull.h"
 #include "explorer/common/source_location.h"
 #include "explorer/interpreter/type_checker.h"
-#include "explorer/interpreter/value.h"
 
 namespace Carbon {
 
@@ -105,7 +105,7 @@ auto MatchingImplSet::GetLabelForDeclaration(const Declaration& declaration)
 }
 
 MatchingImplSet::Match::Match(Nonnull<MatchingImplSet*> parent,
-                              Nonnull<const ImplScope::Impl*> impl,
+                              Nonnull<const ImplScope::ImplFact*> impl,
                               Nonnull<const Value*> type,
                               Nonnull<const Value*> interface)
     : parent_(parent), impl_(impl), type_(type), interface_(interface) {

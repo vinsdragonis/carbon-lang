@@ -2,21 +2,21 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// Note that this is an X-macro header.
+// This is an X-macro header. It does not use `#include` guards, and instead is
+// designed to be `#include`ed after the x-macro is defined in order for its
+// inclusion to expand to the desired output. Macro definitions are cleaned up
+// at the end of this file.
 //
-// It does not use `#include` guards, and instead is designed to be `#include`ed
-// after the x-macro is defined in order for its inclusion to expand to the
-// desired output.
-//
-// x-macros come in two forms:
-//   CARBON_SEMANTICS_BUILTIN_KIND_NAME(Name)
-//     Used as a fallback if other macros are missing.
-//   CARBON_SEMANTICS_BUILTIN_KIND(Name, Type)
+// Supported x-macros are:
+// - CARBON_SEMANTICS_BUILTIN_KIND_NAME(Name)
+//   Used as a fallback if other macros are missing. Used directly by Invalid
+//   only, which is defined last.
+//   - CARBON_SEMANTICS_BUILTIN_KIND(Name, Type, Label)
 //     Defines a builtin kind with the associated type, which must also be
 //     builtin.
 //
-// Note that Invalid is provided with CARBON_SEMANTICS_BUILTIN_KIND_NAME but not
-// CARBON_SEMANTICS_BUILTIN_KIND.
+// This tree represents the subset relationship between these macros, where if a
+// specific x-macro isn't defined, it'll fall back to the parent macro.
 
 #if !(defined(CARBON_SEMANTICS_BUILTIN_KIND_NAME) || \
       defined(CARBON_SEMANTICS_BUILTIN_KIND))
@@ -38,12 +38,12 @@
 
 // Tracks expressions which are valid as types.
 // This has a deliberately self-referential type.
-CARBON_SEMANTICS_BUILTIN_KIND(TypeType, TypeType)
+CARBON_SEMANTICS_BUILTIN_KIND(TypeType, TypeType, "Type")
 
 // Used when a SemanticNode has an invalid type, which should then be ignored
 // for future type checking.
 // This has a deliberately self-referential type.
-CARBON_SEMANTICS_BUILTIN_KIND(InvalidType, InvalidType)
+CARBON_SEMANTICS_BUILTIN_KIND(InvalidType, InvalidType, "<unknown>")
 
 // -----------------------------------------------------------------------------
 // TODO: Below types are all placeholders. While the above may last, the below
@@ -52,19 +52,25 @@ CARBON_SEMANTICS_BUILTIN_KIND(InvalidType, InvalidType)
 // -----------------------------------------------------------------------------
 
 // The type of integer values and integer literals, currently always i32.
-CARBON_SEMANTICS_BUILTIN_KIND(IntegerType, TypeType)
+CARBON_SEMANTICS_BUILTIN_KIND(IntegerType, TypeType, "i32")
 
 // The type of floating point values and real literals, currently always f64.
-CARBON_SEMANTICS_BUILTIN_KIND(FloatingPointType, TypeType)
+CARBON_SEMANTICS_BUILTIN_KIND(FloatingPointType, TypeType, "f64")
 
 // The type of string values and String literals.
-CARBON_SEMANTICS_BUILTIN_KIND(StringType, TypeType)
+CARBON_SEMANTICS_BUILTIN_KIND(StringType, TypeType, "String")
 
-// The canonical empty tuple type, or `() as type`.
-CARBON_SEMANTICS_BUILTIN_KIND(EmptyTupleType, TypeType)
+// The canonical empty struct type.
+CARBON_SEMANTICS_BUILTIN_KIND(EmptyStructType, TypeType, "{} as Type")
 
-// The canonical empty tuple, or `()`.
-CARBON_SEMANTICS_BUILTIN_KIND(EmptyTuple, EmptyTupleType)
+// The canonical empty struct.
+CARBON_SEMANTICS_BUILTIN_KIND(EmptyStruct, EmptyStructType, "{}")
+
+// The canonical empty tuple type.
+CARBON_SEMANTICS_BUILTIN_KIND(EmptyTupleType, TypeType, "() as Type")
+
+// The canonical empty tuple.
+CARBON_SEMANTICS_BUILTIN_KIND(EmptyTuple, EmptyTupleType, "()")
 
 // Keep invalid last, so that we can use values as array indices without needing
 // an invalid entry.

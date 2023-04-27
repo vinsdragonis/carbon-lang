@@ -114,7 +114,6 @@ message BoolLiteral {
 }
 
 message IntTypeLiteral {}
-message ContinuationTypeLiteral {}
 
 message IntLiteral {
   optional int64 value = 1;
@@ -134,7 +133,7 @@ message ArrayTypeLiteral {
   optional Expression size = 2;
 }
 
-message IsWhereClause {
+message ImplsWhereClause {
   optional Expression type = 1;
   optional Expression constraint = 2;
 }
@@ -151,7 +150,7 @@ message RewriteWhereClause {
 
 message WhereClause {
   oneof kind {
-    IsWhereClause is = 1;
+    ImplsWhereClause impls = 1;
     EqualsWhereClause equals = 2;
     RewriteWhereClause rewrite = 3;
   }
@@ -177,16 +176,15 @@ message Expression {
     BoolTypeLiteral bool_type_literal = 12;
     BoolLiteral bool_literal = 13;
     IntTypeLiteral int_type_literal = 14;
-    ContinuationTypeLiteral continuation_type_literal = 15;
-    IntLiteral int_literal = 16;
-    StringLiteral string_literal = 17;
-    StringTypeLiteral string_type_literal = 18;
-    TypeTypeLiteral type_type_literal = 19;
-    UnimplementedExpression unimplemented_expression = 20;
-    ArrayTypeLiteral array_type_literal = 21;
-    CompoundMemberAccessExpression compound_member_access = 22;
-    WhereExpression where = 23;
-    DesignatorExpression designator = 24;
+    IntLiteral int_literal = 15;
+    StringLiteral string_literal = 16;
+    StringTypeLiteral string_type_literal = 17;
+    TypeTypeLiteral type_type_literal = 18;
+    UnimplementedExpression unimplemented_expression = 19;
+    ArrayTypeLiteral array_type_literal = 20;
+    CompoundMemberAccessExpression compound_member_access = 21;
+    WhereExpression where = 22;
+    DesignatorExpression designator = 23;
   }
 }
 
@@ -198,8 +196,13 @@ message BindingPattern {
 }
 
 message GenericBinding {
+  enum Kind {
+    Checked = 0;
+    Template = 1;
+  }
   optional string name = 1;
   optional Expression type = 2;
+  optional Kind kind = 3;
 }
 
 message TuplePattern {
@@ -314,17 +317,6 @@ message MatchStatement {
   repeated MatchClause clauses = 2;
 }
 
-message ContinuationStatement {
-  optional string name = 1;
-  optional BlockStatement body = 2;
-}
-
-message RunStatement {
-  optional Expression argument = 1;
-}
-
-message AwaitStatement {}
-
 message BreakStatement {}
 message ContinueStatement {}
 
@@ -339,13 +331,10 @@ message Statement {
     BlockStatement block = 7;
     WhileStatement while_statement = 8;
     MatchStatement match = 9;
-    ContinuationStatement continuation = 10;
-    RunStatement run = 11;
-    AwaitStatement await_statement = 12;
-    BreakStatement break_statement = 13;
-    ContinueStatement continue_statement = 14;
-    ForStatement for_statement = 15;
-    IncrementDecrementStatement inc_dec = 16;
+    BreakStatement break_statement = 10;
+    ContinueStatement continue_statement = 11;
+    ForStatement for_statement = 12;
+    IncrementDecrementStatement inc_dec = 13;
   }
 }
 
@@ -430,13 +419,14 @@ message ImplDeclaration {
   }
 
   optional ImplKind kind = 1;
-  optional Expression impl_type = 2;
-  optional Expression interface = 3;
-  repeated Declaration members = 4;
+  repeated GenericBinding deduced_parameters = 2;
+  optional Expression impl_type = 3;
+  optional Expression interface = 4;
+  repeated Declaration members = 5;
 }
 
 message MatchFirstDeclaration {
-  repeated Declaration impls = 1;
+  repeated Declaration impl_declarations = 1;
 }
 
 message AliasDeclaration {

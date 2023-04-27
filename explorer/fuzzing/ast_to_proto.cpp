@@ -256,12 +256,12 @@ static auto ExpressionToProto(const Expression& expression)
       for (const WhereClause* where : where.clauses()) {
         Fuzzing::WhereClause clause_proto;
         switch (where->kind()) {
-          case WhereClauseKind::IsWhereClause: {
-            auto* is_proto = clause_proto.mutable_is();
-            *is_proto->mutable_type() =
-                ExpressionToProto(cast<IsWhereClause>(where)->type());
-            *is_proto->mutable_constraint() =
-                ExpressionToProto(cast<IsWhereClause>(where)->constraint());
+          case WhereClauseKind::ImplsWhereClause: {
+            auto* impls_proto = clause_proto.mutable_impls();
+            *impls_proto->mutable_type() =
+                ExpressionToProto(cast<ImplsWhereClause>(where)->type());
+            *impls_proto->mutable_constraint() =
+                ExpressionToProto(cast<ImplsWhereClause>(where)->constraint());
             break;
           }
           case WhereClauseKind::EqualsWhereClause: {
@@ -340,10 +340,6 @@ static auto ExpressionToProto(const Expression& expression)
       expression_proto.mutable_string_type_literal();
       break;
 
-    case ExpressionKind::ContinuationTypeLiteral:
-      expression_proto.mutable_continuation_type_literal();
-      break;
-
     case ExpressionKind::TypeTypeLiteral:
       expression_proto.mutable_type_type_literal();
       break;
@@ -379,6 +375,14 @@ static auto GenericBindingToProto(const GenericBinding& binding)
   Fuzzing::GenericBinding binding_proto;
   binding_proto.set_name(binding.name());
   *binding_proto.mutable_type() = ExpressionToProto(binding.type());
+  switch (binding.binding_kind()) {
+    case GenericBinding::BindingKind::Checked:
+      binding_proto.set_kind(Fuzzing::GenericBinding::Checked);
+      break;
+    case GenericBinding::BindingKind::Template:
+      binding_proto.set_kind(Fuzzing::GenericBinding::Template);
+      break;
+  }
   return binding_proto;
 }
 
@@ -556,25 +560,6 @@ static auto StatementToProto(const Statement& statement) -> Fuzzing::Statement {
       }
       break;
     }
-
-    case StatementKind::Continuation: {
-      const auto& continuation = cast<Continuation>(statement);
-      auto* continuation_proto = statement_proto.mutable_continuation();
-      continuation_proto->set_name(continuation.name());
-      *continuation_proto->mutable_body() =
-          BlockStatementToProto(continuation.body());
-      break;
-    }
-
-    case StatementKind::Run:
-      *statement_proto.mutable_run()->mutable_argument() =
-          ExpressionToProto(cast<Run>(statement).argument());
-      break;
-
-    case StatementKind::Await:
-      // Initializes with the default value; there's nothing to set.
-      statement_proto.mutable_await_statement();
-      break;
 
     case StatementKind::Break:
       // Initializes with the default value; there's nothing to set.
@@ -823,6 +808,9 @@ static auto DeclarationToProto(const Declaration& declaration)
           impl_proto->set_kind(Fuzzing::ImplDeclaration::ExternalImpl);
           break;
       }
+      for (Nonnull<const GenericBinding*> binding : impl.deduced_parameters()) {
+        *impl_proto->add_deduced_parameters() = GenericBindingToProto(*binding);
+      }
       *impl_proto->mutable_impl_type() = ExpressionToProto(*impl.impl_type());
       *impl_proto->mutable_interface() = ExpressionToProto(impl.interface());
       for (const auto& member : impl.members()) {
@@ -834,8 +822,8 @@ static auto DeclarationToProto(const Declaration& declaration)
     case DeclarationKind::MatchFirstDeclaration: {
       const auto& match_first = cast<MatchFirstDeclaration>(declaration);
       auto* match_first_proto = declaration_proto.mutable_match_first();
-      for (const auto* impl : match_first.impls()) {
-        *match_first_proto->add_impls() = DeclarationToProto(*impl);
+      for (const auto* impl : match_first.impl_declarations()) {
+        *match_first_proto->add_impl_declarations() = DeclarationToProto(*impl);
       }
       break;
     }
@@ -855,15 +843,15 @@ static auto DeclarationToProto(const Declaration& declaration)
   return declaration_proto;
 }
 
-auto AstToProto(const AST& ast) -> Fuzzing::CompilationUnit {
-  Fuzzing::CompilationUnit compilation_unit;
-  *compilation_unit.mutable_package_statement() =
-      LibraryNameToProto(ast.package);
-  compilation_unit.set_is_api(ast.is_api);
+auto AstToProto(const AST& ast) -> Fuzzing::Carbon {
+  Fuzzing::Carbon carbon;
+  auto* unit = carbon.mutable_compilation_unit();
+  *unit->mutable_package_statement() = LibraryNameToProto(ast.package);
+  unit->set_is_api(ast.is_api);
   for (const Declaration* declaration : ast.declarations) {
-    *compilation_unit.add_declarations() = DeclarationToProto(*declaration);
+    *unit->add_declarations() = DeclarationToProto(*declaration);
   }
-  return compilation_unit;
+  return carbon;
 }
 
 }  // namespace Carbon

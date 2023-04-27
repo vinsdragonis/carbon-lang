@@ -5,6 +5,7 @@
 #include "explorer/ast/statement.h"
 
 #include "common/check.h"
+#include "explorer/ast/declaration.h"
 #include "explorer/common/arena.h"
 #include "llvm/Support/Casting.h"
 
@@ -122,24 +123,6 @@ void Statement::PrintDepth(int depth, llvm::raw_ostream& out) const {
       }
       break;
     }
-    case StatementKind::Continuation: {
-      const auto& cont = cast<Continuation>(*this);
-      out << "continuation " << cont.name() << " ";
-      if (depth < 0 || depth > 1) {
-        out << "\n";
-      }
-      cont.body().PrintDepth(depth - 1, out);
-      if (depth < 0 || depth > 1) {
-        out << "\n";
-      }
-      break;
-    }
-    case StatementKind::Run:
-      out << "run " << cast<Run>(*this).argument() << ";";
-      break;
-    case StatementKind::Await:
-      out << "await;";
-      break;
   }
 }
 
@@ -169,5 +152,8 @@ auto AssignOperatorToString(AssignOperator op) -> std::string_view {
       return ">>=";
   }
 }
+
+Return::Return(CloneContext& context, const Return& other)
+    : Statement(context, other), function_(context.Remap(other.function_)) {}
 
 }  // namespace Carbon

@@ -40,8 +40,8 @@ standard mathematical meaning:
 | Equality   | `!=`     | `x != y` | ≠                    | Inequality or not equal to |
 | Relational | `<`      | `x < y`  | <                    | Less than                  |
 | Relational | `<=`     | `x <= y` | ≤                    | Less than or equal to      |
-| Relational | `>`      | `x > y`  | >                    | Less than                  |
-| Relational | `>=`     | `x >= y` | ≥                    | Less than or equal to      |
+| Relational | `>`      | `x > y`  | >                    | Greater than               |
+| Relational | `>=`     | `x >= y` | ≥                    | Greater than or equal to   |
 
 Comparison operators all return a `bool`; they evaluate to `true` when the
 indicated comparison is true. All comparison operators are infix binary
@@ -445,8 +445,8 @@ should have no observable side-effects.
     `a.Compare(b) == a.Compare(c)`.
 
 `OrderedWith` implementations should also be _consistent under reversal_. That
-is, given types `T` and `U` where `T is OrderedWith(U)` and
-`U is OrderedWith(T)`, and values `a: T` and `b: U`:
+is, given types `T` and `U` where `T impls OrderedWith(U)` and
+`U impls OrderedWith(T)`, and values `a: T` and `b: U`:
 
 -   If `a.(OrderedWith.Compare)(b)` is `Ordering.Greater`, then
     `b.(OrderedWith.Compare)(a)` is `Ordering.Less`, and the other way around.

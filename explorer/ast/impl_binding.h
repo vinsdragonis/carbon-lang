@@ -10,21 +10,20 @@
 #include "common/check.h"
 #include "common/ostream.h"
 #include "explorer/ast/ast_node.h"
-#include "explorer/ast/pattern.h"
-#include "explorer/ast/value_category.h"
+#include "explorer/ast/expression_category.h"
 
 namespace Carbon {
 
 class Value;
 class Expression;
-class ImplBinding;
+class GenericBinding;
 
 // `ImplBinding` plays the role of the parameter for passing witness
 // tables to a generic. However, unlike regular parameters
 // (`BindingPattern`) there is no explicit syntax that corresponds to
 // an `ImplBinding`, so they are not created during parsing. Instances
 // of `ImplBinding` are created during type checking, when processing
-// a type parameter (a `GenericBinding`), or an `is` requirement in
+// a type parameter (a `GenericBinding`), or an `impls` requirement in
 // a `where` clause.
 class ImplBinding : public AstNode {
  public:
@@ -36,6 +35,8 @@ class ImplBinding : public AstNode {
       : AstNode(AstNodeKind::ImplBinding, source_loc),
         type_var_(type_var),
         iface_(iface) {}
+
+  explicit ImplBinding(CloneContext& context, const ImplBinding& other);
 
   static auto classof(const AstNode* node) -> bool {
     return InheritsFromImplBinding(node->kind());
@@ -76,7 +77,9 @@ class ImplBinding : public AstNode {
   auto static_type() const -> const Value& {
     CARBON_FATAL() << "an ImplBinding has no type";
   }
-  auto value_category() const -> ValueCategory { return ValueCategory::Let; }
+  auto expression_category() const -> ExpressionCategory {
+    return ExpressionCategory::Value;
+  }
 
   // Return the original impl binding.
   auto original() const -> Nonnull<const ImplBinding*> {

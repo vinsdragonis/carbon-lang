@@ -1168,7 +1168,7 @@ methods whose implementation may be overridden in a derived class.
 
 Only methods defined in the scope of the class definition may be virtual, not
 any defined in
-[external interface impls](/docs/design/generics/details.md#external-impl).
+[external interface `impl` declarations](/docs/design/generics/details.md#external-impl).
 Interface methods may be implemented using virtual methods when the
 [impl is internal](/docs/design/generics/details.md#implementing-interfaces),
 and calls to those methods by way of the interface will do virtual dispatch just
@@ -1315,9 +1315,9 @@ This means either
 [creating the object in the return statement itself](/proposals/p0257.md#function-returns-and-initialization),
 or in
 [a `returned var` declaration](/proposals/p0257.md#declared-returned-variable).
-As before, instances can be created using by casting a struct value into the
-class type, this time with a `.base` member to initialize the members of the
-immediate base type.
+As before, instances can be created by casting a struct value into the class
+type, this time with a `.base` member to initialize the members of the immediate
+base type.
 
 ```
 class MyDerivedType extends MyBaseType {

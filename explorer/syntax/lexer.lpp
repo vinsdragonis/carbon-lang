@@ -41,7 +41,6 @@ API                   "api"
 ARROW                 "->"
 AS                    "as"
 AUTO                  "auto"
-AWAIT                 "__await"
 BASE                  "base"
 BOOL                  "bool"
 BREAK                 "break"
@@ -54,8 +53,6 @@ COLON                 ":"
 COLON_BANG            ":!"
 COMMA                 ","
 CONSTRAINT            "constraint"
-CONTINUATION          "__continuation"
-CONTINUATION_TYPE     "__Continuation"
 CONTINUE              "continue"
 DEFAULT               "default"
 DESTRUCTOR            "destructor"
@@ -76,10 +73,10 @@ GREATER_GREATER       ">>"
 GREATER_GREATER_EQUAL ">>="
 IF                    "if"
 IMPL                  "impl"
+IMPLS                 "impls"
 IMPORT                "import"
 IN                    "in"
 INTERFACE             "interface"
-IS                    "is"
 LEFT_CURLY_BRACE      "{"
 LEFT_PARENTHESIS      "("
 LEFT_SQUARE_BRACKET   "["
@@ -114,13 +111,13 @@ RETURNED              "returned"
 RIGHT_CURLY_BRACE     "}"
 RIGHT_PARENTHESIS     ")"
 RIGHT_SQUARE_BRACKET  "]"
-RUN                   "__run"
 SELF                  "Self"
 SEMICOLON             ";"
 SLASH                 "/"
 SLASH_EQUAL           "/="
 STAR_EQUAL            "*="
 STRING                "String"
+TEMPLATE              "template"
 THEN                  "then"
 TRUE                  "true"
 TYPE                  "type"
@@ -163,7 +160,6 @@ operand_start         [(A-Za-z0-9_\"]
 {ARROW}                 { return CARBON_SIMPLE_TOKEN(ARROW);                 }
 {AS}                    { return CARBON_SIMPLE_TOKEN(AS);                    }
 {AUTO}                  { return CARBON_SIMPLE_TOKEN(AUTO);                  }
-{AWAIT}                 { return CARBON_SIMPLE_TOKEN(AWAIT);                 }
 {BASE}                  { return CARBON_SIMPLE_TOKEN(BASE);                  }
 {BOOL}                  { return CARBON_SIMPLE_TOKEN(BOOL);                  }
 {BREAK}                 { return CARBON_SIMPLE_TOKEN(BREAK);                 }
@@ -176,8 +172,6 @@ operand_start         [(A-Za-z0-9_\"]
 {COLON}                 { return CARBON_SIMPLE_TOKEN(COLON);                 }
 {COMMA}                 { return CARBON_SIMPLE_TOKEN(COMMA);                 }
 {CONSTRAINT}            { return CARBON_SIMPLE_TOKEN(CONSTRAINT);            }
-{CONTINUATION_TYPE}     { return CARBON_SIMPLE_TOKEN(CONTINUATION_TYPE);     }
-{CONTINUATION}          { return CARBON_SIMPLE_TOKEN(CONTINUATION);          }
 {CONTINUE}              { return CARBON_SIMPLE_TOKEN(CONTINUE);              }
 {DEFAULT}               { return CARBON_SIMPLE_TOKEN(DEFAULT);               }
 {DESTRUCTOR}            { return CARBON_SIMPLE_TOKEN(DESTRUCTOR);            }
@@ -197,11 +191,11 @@ operand_start         [(A-Za-z0-9_\"]
 {GREATER_GREATER}       { return CARBON_SIMPLE_TOKEN(GREATER_GREATER);       }
 {GREATER}               { return CARBON_SIMPLE_TOKEN(GREATER);               }
 {IF}                    { return CARBON_SIMPLE_TOKEN(IF);                    }
+{IMPLS}                 { return CARBON_SIMPLE_TOKEN(IMPLS);                 }
 {IMPL}                  { return CARBON_SIMPLE_TOKEN(IMPL);                  }
 {IMPORT}                { return CARBON_SIMPLE_TOKEN(IMPORT);                }
 {INTERFACE}             { return CARBON_SIMPLE_TOKEN(INTERFACE);             }
 {IN}                    { return CARBON_SIMPLE_TOKEN(IN);                    }
-{IS}                    { return CARBON_SIMPLE_TOKEN(IS);                    }
 {LEFT_CURLY_BRACE}      { return CARBON_SIMPLE_TOKEN(LEFT_CURLY_BRACE);      }
 {LEFT_PARENTHESIS}      { return CARBON_SIMPLE_TOKEN(LEFT_PARENTHESIS);      }
 {LEFT_SQUARE_BRACKET}   { return CARBON_SIMPLE_TOKEN(LEFT_SQUARE_BRACKET);   }
@@ -233,13 +227,13 @@ operand_start         [(A-Za-z0-9_\"]
 {PLUS}                  { return CARBON_SIMPLE_TOKEN(PLUS);                  }
 {RETURNED}              { return CARBON_SIMPLE_TOKEN(RETURNED);              }
 {RETURN}                { return CARBON_SIMPLE_TOKEN(RETURN);                }
-{RUN}                   { return CARBON_SIMPLE_TOKEN(RUN);                   }
 {SELF}                  { return CARBON_SIMPLE_TOKEN(SELF);                  }
 {SEMICOLON}             { return CARBON_SIMPLE_TOKEN(SEMICOLON);             }
 {SLASH_EQUAL}           { return CARBON_SIMPLE_TOKEN(SLASH_EQUAL);           }
 {SLASH}                 { return CARBON_SIMPLE_TOKEN(SLASH);                 }
 {STAR_EQUAL}            { return CARBON_SIMPLE_TOKEN(STAR_EQUAL);            }
 {STRING}                { return CARBON_SIMPLE_TOKEN(STRING);                }
+{TEMPLATE}              { return CARBON_SIMPLE_TOKEN(TEMPLATE);              }
 {THEN}                  { return CARBON_SIMPLE_TOKEN(THEN);                  }
 {TRUE}                  { return CARBON_SIMPLE_TOKEN(TRUE);                  }
 {TYPE}                  { return CARBON_SIMPLE_TOKEN(TYPE);                  }
