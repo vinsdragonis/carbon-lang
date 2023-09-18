@@ -3,14 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: Struct OK
-// CHECK:STDOUT: Choice OK
-// CHECK:STDOUT: Class OK
-// CHECK:STDOUT: Interface OK
-// CHECK:STDOUT: Constraint OK
-// CHECK:STDOUT: result: 0
 
 package Foo api;
 
@@ -74,3 +66,10 @@ fn Main() -> i32 {
   TestConstraint();
   return 0;
 }
+
+// CHECK:STDOUT: Struct OK
+// CHECK:STDOUT: Choice OK
+// CHECK:STDOUT: Class OK
+// CHECK:STDOUT: Interface OK
+// CHECK:STDOUT: Constraint OK
+// CHECK:STDOUT: result: 0

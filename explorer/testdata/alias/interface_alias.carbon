@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 12345
 
 package ExplorerTest api;
 
@@ -58,3 +55,5 @@ fn Main() -> i32 {
 
   return 10000 * a.a + 1000 * b2.a + 100 * n + 10 * c2.a.a + s.a;
 }
+
+// CHECK:STDOUT: result: 12345

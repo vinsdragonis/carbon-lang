@@ -3,12 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: c.Foo(): 1
-// CHECK:STDOUT: d.Foo(): 2
-// CHECK:STDOUT: (*cp).Foo(): 2
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -19,7 +13,8 @@ base class C {
   }
 }
 
-base class D extends C {
+base class D {
+  extend base: C;
   var value: i32;
   impl fn Foo[self: Self]() -> i32 {
     return self.value;
@@ -36,3 +31,8 @@ fn Main() -> i32 {
 
   return 0;
 }
+
+// CHECK:STDOUT: c.Foo(): 1
+// CHECK:STDOUT: d.Foo(): 2
+// CHECK:STDOUT: (*cp).Foo(): 2
+// CHECK:STDOUT: result: 0

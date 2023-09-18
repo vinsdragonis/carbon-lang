@@ -3,15 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
 class ConvertTo(T:! type) {
   var v: T;
-  impl as ImplicitAs(T) {
+  extend impl as ImplicitAs(T) {
     fn Convert[self: Self]() -> T { return self.v; }
   }
 }
@@ -20,3 +17,5 @@ fn Main() -> i32 {
   Assert({.v = true} as ConvertTo(bool), {.v = "Pass"} as ConvertTo(String));
   return 0;
 }
+
+// CHECK:STDOUT: result: 0

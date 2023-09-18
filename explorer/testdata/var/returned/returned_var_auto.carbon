@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 3
 
 package ExplorerTest api;
 
@@ -17,3 +14,5 @@ fn AddInt(a: i32, b: i32) -> auto {
 fn Main() -> i32 {
   return AddInt(1, 2);
 }
+
+// CHECK:STDOUT: result: 3

@@ -12,7 +12,7 @@
 #include "explorer/ast/ast_node.h"
 #include "explorer/ast/clone_context.h"
 #include "explorer/ast/expression_category.h"
-#include "explorer/common/nonnull.h"
+#include "explorer/base/nonnull.h"
 
 namespace Carbon {
 
@@ -56,7 +56,7 @@ template <typename T>
 static constexpr bool
     ImplementsValueNode<T, typename T::ImplementsCarbonValueNode> = true;
 
-class ValueNodeView {
+class ValueNodeView : public Printable<ValueNodeView> {
  public:
   template <typename NodeType,
             typename = std::enable_if_t<ImplementsValueNode<NodeType>>>
@@ -135,6 +135,11 @@ class ValueNodeView {
   friend auto operator<(const ValueNodeView& lhs, const ValueNodeView& rhs)
       -> bool {
     return std::less<>()(lhs.base_, rhs.base_);
+  }
+
+  friend auto hash_value(const ValueNodeView& view) -> llvm::hash_code {
+    using llvm::hash_value;
+    return hash_value(view.base_);
   }
 
  private:

@@ -6,8 +6,12 @@
 
 #include <gtest/gtest.h>
 
-namespace Carbon {
+#include "testing/base/test_raw_ostream.h"
 
+namespace Carbon {
+namespace {
+
+// These are directly in the Carbon namespace because the defines require it.
 CARBON_DEFINE_RAW_ENUM_CLASS(TestKind, uint8_t) {
 #define CARBON_ENUM_BASE_TEST_KIND(Name) CARBON_RAW_ENUM_ENUMERATOR(Name)
 #include "common/enum_base_test.def"
@@ -31,7 +35,8 @@ CARBON_DEFINE_ENUM_CLASS_NAMES(TestKind) = {
 #include "common/enum_base_test.def"
 };
 
-namespace {
+static_assert(sizeof(TestKind) == sizeof(uint8_t),
+              "Class size doesn't match enum size!");
 
 TEST(EnumBaseTest, NamesAndConstants) {
   EXPECT_EQ("Beep", TestKind::Beep.name());
@@ -40,8 +45,7 @@ TEST(EnumBaseTest, NamesAndConstants) {
 }
 
 TEST(EnumBaseTest, Printing) {
-  std::string s;
-  llvm::raw_string_ostream stream(s);
+  Testing::TestRawOstream stream;
 
   TestKind kind = TestKind::Beep;
   stream << kind << " " << TestKind::Beep;
@@ -50,7 +54,7 @@ TEST(EnumBaseTest, Printing) {
 
   // Check the streamed results and also make sure we can stream into GoogleTest
   // assertions.
-  EXPECT_EQ("Beep Beep Boop", s) << "Final kind: " << kind;
+  EXPECT_EQ("Beep Beep Boop", stream.TakeStr()) << "Final kind: " << kind;
 }
 
 TEST(EnumBaseTest, Switch) {

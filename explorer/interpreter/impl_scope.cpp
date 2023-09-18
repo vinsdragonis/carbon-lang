@@ -183,8 +183,7 @@ auto ImplScope::TryResolve(Nonnull<const Value*> constraint_type,
         CARBON_ASSIGN_OR_RETURN(
             Nonnull<const Value*> type,
             type_checker.Substitute(local_bindings, intrinsic.type));
-        IntrinsicConstraint converted = {
-            .type = type, .kind = intrinsic.kind, .arguments = {}};
+        IntrinsicConstraint converted(type, intrinsic.kind, {});
         converted.arguments.reserve(intrinsic.arguments.size());
         for (Nonnull<const Value*> argument : intrinsic.arguments) {
           CARBON_ASSIGN_OR_RETURN(
@@ -192,9 +191,9 @@ auto ImplScope::TryResolve(Nonnull<const Value*> constraint_type,
               type_checker.Substitute(local_bindings, argument));
           converted.arguments.push_back(subst_arg);
         }
-        CARBON_ASSIGN_OR_RETURN(
-            bool intrinsic_satisfied,
-            type_checker.IsIntrinsicConstraintSatisfied(converted, *this));
+        CARBON_ASSIGN_OR_RETURN(bool intrinsic_satisfied,
+                                type_checker.IsIntrinsicConstraintSatisfied(
+                                    source_loc, converted, *this));
         if (!intrinsic_satisfied) {
           if (!diagnose_missing_impl) {
             return {std::nullopt};
@@ -415,10 +414,11 @@ auto ImplScope::TryResolveInterfaceHere(
 
 // TODO: Add indentation when printing the parents.
 void ImplScope::Print(llvm::raw_ostream& out) const {
-  out << "impl declarations: ";
-  llvm::ListSeparator sep;
+  llvm::ListSeparator sep(",\n    ");
+  out << "    "
+      << "[";
   for (const ImplFact& impl : impl_facts_) {
-    out << sep << *(impl.type) << " as " << *(impl.interface);
+    out << sep << "`" << *(impl.type) << "` as `" << *(impl.interface) << "`";
     if (impl.sort_key) {
       out << " " << *impl.sort_key;
     }
@@ -427,10 +427,10 @@ void ImplScope::Print(llvm::raw_ostream& out) const {
     out << sep;
     llvm::ListSeparator equal(" == ");
     for (Nonnull<const Value*> value : eq->values) {
-      out << equal << *value;
+      out << equal << "`" << *value << "`";
     }
   }
-  out << "\n";
+  out << "]\n";
   if (parent_scope_) {
     out << **parent_scope_;
   }

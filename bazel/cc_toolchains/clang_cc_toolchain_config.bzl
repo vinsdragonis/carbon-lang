@@ -4,6 +4,7 @@
 
 """A Starlark cc_toolchain configuration rule"""
 
+load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
 load(
     "@bazel_tools//tools/cpp:cc_toolchain_config_lib.bzl",
     "action_config",
@@ -16,7 +17,6 @@ load(
     "variable_with_value",
     "with_feature_set",
 )
-load("@bazel_tools//tools/build_defs/cc:action_names.bzl", "ACTION_NAMES")
 load(
     ":clang_detected_variables.bzl",
     "clang_bindir",
@@ -132,7 +132,7 @@ def _impl(ctx):
                             "-Wself-assign",
                             "-Wimplicit-fallthrough",
                             "-Wctad-maybe-unsupported",
-                            "-Wnon-virtual-dtor",
+                            "-Wdelete-non-virtual-dtor",
                             # Don't warn on external code as we can't
                             # necessarily patch it easily.
                             "--system-header-prefix=external/",
@@ -511,10 +511,13 @@ def _impl(ctx):
 
     # With clang 14 and lower, we expect it to be built with libc++ debug
     # support. In later LLVM versions, we expect the assertions define to work.
+    # clang 17 deprecates LIBCPP_ENABLE_ASSERTIONS in favor of HARDENED_MODE.
     if clang_version and clang_version <= 14:
         libcpp_debug_flags = ["-D_LIBCPP_DEBUG=1"]
-    else:
+    elif clang_version and clang_version <= 16:
         libcpp_debug_flags = ["-D_LIBCPP_ENABLE_ASSERTIONS=1"]
+    else:
+        libcpp_debug_flags = ["-D_LIBCPP_ENABLE_HARDENED_MODE=1"]
 
     linux_flags_feature = feature(
         name = "linux_flags",
@@ -853,7 +856,7 @@ def _impl(ctx):
     # Next, add the features based on the target platform. Here too the
     # features are order sensitive. We also setup the sysroot here.
     if ctx.attr.target_cpu == "k8":
-        features += [linux_flags_feature]
+        features.append(linux_flags_feature)
         sysroot = None
     elif ctx.attr.target_cpu == "x64_windows":
         # TODO: Need to figure out if we need to add windows specific features
@@ -861,19 +864,19 @@ def _impl(ctx):
         # so that might be an example where a feature must be added.
         sysroot = None
     elif ctx.attr.target_cpu in ["darwin", "darwin_arm64"]:
-        features += [macos_flags_feature]
+        features.append(macos_flags_feature)
         sysroot = sysroot_dir
     elif ctx.attr.target_cpu == "freebsd":
-        features += [freebsd_flags_feature]
+        features.append(freebsd_flags_feature)
         sysroot = sysroot_dir
     else:
         fail("Unsupported target platform!")
 
     # TODO: Need to support non-macOS ARM platforms here.
     if ctx.attr.target_cpu == "darwin_arm64":
-        features += [aarch64_cpu_flags]
+        features.append(aarch64_cpu_flags)
     else:
-        features += [x86_64_cpu_flags]
+        features.append(x86_64_cpu_flags)
 
     # Finally append the libraries to link and any final flags.
     features += [

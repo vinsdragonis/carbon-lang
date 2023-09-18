@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -19,7 +16,9 @@ base class N.BaseClass {
   __mix Mixin;
 }
 
-class N.DerivedClass extends BaseClass {}
+class N.DerivedClass {
+  extend base: BaseClass;
+}
 
 namespace N.Inner;
 
@@ -32,7 +31,7 @@ interface N.Iface {
 }
 
 constraint N.Constraint {
-  extends Iface;
+  extend Iface;
 }
 
 var v: N.DerivedClass = {.base = {}};
@@ -46,3 +45,5 @@ impl i32 as N.Constraint {
 }
 
 fn Main() -> i32 { return 0; }
+
+// CHECK:STDOUT: result: 0

@@ -14,8 +14,9 @@
 #include <set>
 #include <variant>
 
-#include "common/fuzzing/proto_to_carbon.h"
 #include "explorer/syntax/parse.h"
+#include "testing/base/test_raw_ostream.h"
+#include "testing/fuzzing/proto_to_carbon.h"
 
 namespace Carbon::Testing {
 namespace {
@@ -29,14 +30,13 @@ static std::vector<llvm::StringRef>* carbon_files = nullptr;
 
 // Returns a string representation of `ast`.
 auto AstToString(const AST& ast) -> std::string {
-  std::string s;
-  llvm::raw_string_ostream out(s);
+  TestRawOstream out;
   out << "package " << ast.package.package << (ast.is_api ? "api" : "impl")
       << ";\n";
   for (auto* declaration : ast.declarations) {
     out << *declaration << "\n";
   }
-  return s;
+  return out.TakeStr();
 }
 
 // Concatenates message and field names.
@@ -99,7 +99,8 @@ TEST(AstToProtoTest, SetsAllProtoFields) {
   Fuzzing::Carbon merged_proto;
   for (const llvm::StringRef f : *carbon_files) {
     Arena arena;
-    const ErrorOr<AST> ast = Parse(&arena, f, /*parser_debug=*/false);
+    const ErrorOr<AST> ast = Parse(*llvm::vfs::getRealFileSystem(), &arena, f,
+                                   FileKind::Main, /*parser_debug=*/false);
     if (ast.ok()) {
       merged_proto.MergeFrom(AstToProto(*ast));
     }
@@ -136,7 +137,8 @@ TEST(AstToProtoTest, Roundtrip) {
   int parsed_ok_count = 0;
   for (const llvm::StringRef f : *carbon_files) {
     Arena arena;
-    const ErrorOr<AST> ast = Parse(&arena, f, /*parser_debug=*/false);
+    const ErrorOr<AST> ast = Parse(*llvm::vfs::getRealFileSystem(), &arena, f,
+                                   FileKind::Main, /*parser_debug=*/false);
     if (ast.ok()) {
       ++parsed_ok_count;
       const std::string source_from_proto =
@@ -144,8 +146,8 @@ TEST(AstToProtoTest, Roundtrip) {
       SCOPED_TRACE(testing::Message()
                    << "Carbon file: " << f << ", source from proto:\n"
                    << source_from_proto);
-      const ErrorOr<AST> ast_from_proto =
-          ParseFromString(&arena, f, source_from_proto, /*parser_debug=*/false);
+      const ErrorOr<AST> ast_from_proto = ParseFromString(
+          &arena, f, FileKind::Main, source_from_proto, /*parser_debug=*/false);
 
       if (ast_from_proto.ok()) {
         EXPECT_EQ(AstToString(*ast), AstToString(*ast_from_proto));
@@ -175,7 +177,8 @@ TEST(AstToProtoTest, SameProtoAfterClone) {
   int parsed_ok_count = 0;
   for (const llvm::StringRef f : *carbon_files) {
     Arena arena;
-    const ErrorOr<AST> ast = Parse(&arena, f, /*parser_debug=*/false);
+    const ErrorOr<AST> ast = Parse(*llvm::vfs::getRealFileSystem(), &arena, f,
+                                   FileKind::Main, /*parser_debug=*/false);
     if (ast.ok()) {
       ++parsed_ok_count;
       const AST clone = CloneAST(arena, *ast);

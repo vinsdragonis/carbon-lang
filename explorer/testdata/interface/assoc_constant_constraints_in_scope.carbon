@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 5
 
 package ExplorerTest api;
 
@@ -18,16 +15,18 @@ interface I(T:! type) {
 }
 
 class CA {
-  impl as A(i32) where .AResult = i32 {}
+  extend impl as A(i32) where .AResult = i32 {}
 }
 class CB {
-  impl as B(i32) where .BResult = CA {}
+  extend impl as B(i32) where .BResult = CA {}
 }
 class CI {
-  impl as I(i32) where .X = CB and .Y = 5 {}
+  extend impl as I(i32) where .X = CB and .Y = 5 {}
 }
 
 fn Main() -> i32 {
   var v: CI = {};
   return v.(I(i32).Y);
 }
+
+// CHECK:STDOUT: result: 5

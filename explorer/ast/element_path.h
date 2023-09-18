@@ -33,7 +33,7 @@ class Witness;
 // there is only one kind of step, a string specifying a child field by name,
 // but that may change as Carbon develops. Note that an empty ElementPath
 // refers to the initial Value itself.
-class ElementPath {
+class ElementPath : public Printable<ElementPath> {
  public:
   // Constructs an empty ElementPath.
   ElementPath() = default;
@@ -42,13 +42,24 @@ class ElementPath {
   // of a field. However, inside a generic, when there is a field
   // access on something of a generic type, e.g., `T`, then we also
   // need `witness`, a pointer to the witness table containing that field.
-  class Component {
+  class Component : public Printable<Component> {
    public:
     explicit Component(Nonnull<const Element*> element) : element_(element) {}
     Component(Nonnull<const Element*> element,
               std::optional<Nonnull<const InterfaceType*>> interface,
               std::optional<Nonnull<const Witness*>> witness)
         : element_(element), interface_(interface), witness_(witness) {}
+
+    inline friend auto operator==(const Component& lhs, const Component& rhs)
+        -> bool {
+      return lhs.element_ == rhs.element_ && lhs.interface_ == rhs.interface_ &&
+             lhs.witness_ == rhs.witness_;
+    }
+    inline friend auto hash_value(const Component& component)
+        -> llvm::hash_code {
+      return llvm::hash_combine(component.element_, component.interface_,
+                                component.witness_);
+    }
 
     auto element() const -> Nonnull<const Element*> { return element_; }
 
@@ -82,6 +93,15 @@ class ElementPath {
   auto operator=(const ElementPath&) -> ElementPath& = default;
   auto operator=(ElementPath&&) -> ElementPath& = default;
 
+  inline friend auto operator==(const ElementPath& lhs, const ElementPath& rhs)
+      -> bool {
+    return lhs.components_ == rhs.components_;
+  }
+  inline friend auto hash_value(const ElementPath& path) -> llvm::hash_code {
+    return llvm::hash_combine_range(path.components_.begin(),
+                                    path.components_.end());
+  }
+
   // Returns whether *this is empty.
   auto IsEmpty() const -> bool { return components_.empty(); }
 
@@ -108,13 +128,12 @@ class ElementPath {
     }
   }
 
-  LLVM_DUMP_METHOD void Dump() const { Print(llvm::errs()); }
-
  private:
   // The representation of ElementPath describes how to locate a Value within
   // another Value, so its implementation details are tied to the implementation
   // details of Value.
   friend class Value;
+  friend class Heap;
   std::vector<Component> components_;
 };
 

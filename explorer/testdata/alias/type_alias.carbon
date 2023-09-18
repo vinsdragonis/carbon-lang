@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 4
 
 package ExplorerTest api;
 
@@ -18,3 +15,5 @@ fn Main() -> TypeAlias {
   var q: TypeAlias* = &m;
   return *p + *q + m + n;
 }
+
+// CHECK:STDOUT: result: 4

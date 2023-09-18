@@ -5,6 +5,7 @@
 workspace(name = "carbon")
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+load("@bazel_tools//tools/build_defs/repo:utils.bzl", "maybe")
 
 skylib_version = "1.3.0"
 
@@ -55,12 +56,12 @@ configure_clang_toolchain(name = "bazel_cc_toolchain")
 # Abseil libraries
 ###############################################################################
 
-# Head as of 2022-09-13.
-abseil_version = "530cd52f585c9d31b2b28cea7e53915af7a878e3"
+# Head as of 2023-07-31.
+abseil_version = "407f2fdd5ec6f79287919486aa5869b346093906"
 
 http_archive(
     name = "com_google_absl",
-    sha256 = "f8a6789514a3b109111252af92da41d6e64f90efca9fb70515d86debee57dc24",
+    sha256 = "953a914ac42f87caf5ed6a86890e183ae4e2bc69666a90c67605091d6e77e502",
     strip_prefix = "abseil-cpp-{0}".format(abseil_version),
     urls = ["https://github.com/abseil/abseil-cpp/archive/{0}.tar.gz".format(abseil_version)],
 )
@@ -69,12 +70,12 @@ http_archive(
 # RE2 libraries
 ###############################################################################
 
-# Head as of 2022-09-14.
-re2_version = "cc1c9db8bf5155d89d10d65998cdb226f676492c"
+# Head as of 2023-07-31.
+re2_version = "960c861764ff54c9a12ff683ba55ccaad1a8f73b"
 
 http_archive(
     name = "com_googlesource_code_re2",
-    sha256 = "8ef976c79a300f8c5e880535665bd4ba146fb09fb6d2342f8f1a02d9af29f365",
+    sha256 = "8315f22198c25e9f7f1a3754566824710c08ddbb39d93e9920f4a131e871fc15",
     strip_prefix = "re2-{0}".format(re2_version),
     urls = ["https://github.com/google/re2/archive/{0}.tar.gz".format(re2_version)],
 )
@@ -83,12 +84,12 @@ http_archive(
 # GoogleTest libraries
 ###############################################################################
 
-# Head as of 2022-09-14.
-googletest_version = "1336c4b6d1a6f4bc6beebccb920e5ff858889292"
+# Head as of 2023-07-31.
+googletest_version = "c875c4e2249ec124c24f72141b3780c22256fd44"
 
 http_archive(
     name = "com_google_googletest",
-    sha256 = "d701aaeb9a258afba27210d746d971042be96c371ddc5a49f1e8914d9ea17e3c",
+    sha256 = "21e0cd1110ba534409facccdda1bad90174e7ee7ded60c00dd2b43b4df654080",
     strip_prefix = "googletest-{0}".format(googletest_version),
     urls = ["https://github.com/google/googletest/archive/{0}.tar.gz".format(googletest_version)],
 )
@@ -112,7 +113,7 @@ http_archive(
 
 # We pin to specific upstream commits and try to track top-of-tree reasonably
 # closely rather than pinning to a specific release.
-llvm_version = "219ba2fb7b0ae89101f3c81a47fe4fc4aa80dea4"
+llvm_version = "3d51010a3350660160981c6b8e624dcc87c208a3"
 
 http_archive(
     name = "llvm-raw",
@@ -121,9 +122,9 @@ http_archive(
     patches = [
         "@carbon//bazel/patches/llvm:0001_Patch_for_mallinfo2_when_using_Bazel_build_system.patch",
         "@carbon//bazel/patches/llvm:0002_Added_Bazel_build_for_compiler_rt_fuzzer.patch",
-        "@carbon//bazel/patches/llvm:0003_Modernize_py_binary_rule_for_lit.patch",
+        "@carbon//bazel/patches/llvm:0003_Add_library_for_clangd.patch",
     ],
-    sha256 = "8b2fa8ae3e434577b4fdd1e91b8990b0651776bd78cf4fbf9b709dcdcdbfbd21",
+    sha256 = "efbca707a6eb1c714b849de120309070eef282660c0f4be5b68efef62cc95cf5",
     strip_prefix = "llvm-project-{0}".format(llvm_version),
     urls = ["https://github.com/llvm/llvm-project/archive/{0}.tar.gz".format(llvm_version)],
 )
@@ -132,39 +133,46 @@ load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 
 llvm_configure(
     name = "llvm-project",
-    repo_mapping = {"@llvm_zlib": "@zlib"},
     targets = [
         "AArch64",
         "X86",
     ],
 )
 
-load("@llvm-raw//utils/bazel:terminfo.bzl", "llvm_terminfo_system")
+# Dependencies copied from
+# https://github.com/llvm/llvm-project/blob/main/utils/bazel/WORKSPACE.
+maybe(
+    http_archive,
+    name = "llvm_zlib",
+    build_file = "@llvm-raw//utils/bazel/third_party_build:zlib-ng.BUILD",
+    sha256 = "e36bb346c00472a1f9ff2a0a4643e590a254be6379da7cddd9daeb9a7f296731",
+    strip_prefix = "zlib-ng-2.0.7",
+    urls = [
+        "https://github.com/zlib-ng/zlib-ng/archive/refs/tags/2.0.7.zip",
+    ],
+)
 
-# We require successful detection and use of a system terminfo library.
-llvm_terminfo_system(name = "llvm_terminfo")
-
-load("@llvm-raw//utils/bazel:zlib.bzl", "llvm_zlib_system")
-
-# We require successful detection and use of a system zlib library.
-llvm_zlib_system(name = "zlib")
+maybe(
+    http_archive,
+    name = "llvm_zstd",
+    build_file = "@llvm-raw//utils/bazel/third_party_build:zstd.BUILD",
+    sha256 = "7c42d56fac126929a6a85dbc73ff1db2411d04f104fae9bdea51305663a83fd0",
+    strip_prefix = "zstd-1.5.2",
+    urls = [
+        "https://github.com/facebook/zstd/releases/download/v1.5.2/zstd-1.5.2.tar.gz",
+    ],
+)
 
 ###############################################################################
 # Flex/Bison rules
 ###############################################################################
 
-rules_m4_version = "0.2.1"
+rules_m4_version = "0.2.3"
 
 http_archive(
     name = "rules_m4",
-    patch_args = ["-p1"],
-    patches = [
-        # Trying to upstream: https://github.com/jmillikin/rules_m4/pull/15
-        "@carbon//bazel/patches/m4:0001_Support_M4_building_on_FreeBSD.patch",
-    ],
-    sha256 = "eaa674cd84546038ecbcc49cdd346134a20961a41fa1a541e80d8bf4b470c34d",
-    strip_prefix = "rules_m4-{0}".format(rules_m4_version),
-    urls = ["https://github.com/jmillikin/rules_m4/archive/v{0}.tar.gz".format(rules_m4_version)],
+    sha256 = "10ce41f150ccfbfddc9d2394ee680eb984dc8a3dfea613afd013cfb22ea7445c",
+    urls = ["https://github.com/jmillikin/rules_m4/releases/download/v{0}/rules_m4-v{0}.tar.xz".format(rules_m4_version)],
 )
 
 load("@rules_m4//m4:m4.bzl", "m4_register_toolchains")
@@ -173,15 +181,12 @@ load("@rules_m4//m4:m4.bzl", "m4_register_toolchains")
 # them anyways.
 m4_register_toolchains(extra_copts = ["-w"])
 
-# TODO: Can switch to a normal release version when it includes:
-# https://github.com/jmillikin/rules_flex/commit/1f1d9c306c2b4b8be2cb899a3364b84302124e77
-rules_flex_version = "1f1d9c306c2b4b8be2cb899a3364b84302124e77"
+rules_flex_version = "0.2.1"
 
 http_archive(
     name = "rules_flex",
-    sha256 = "a4e99a0a241c8a5aa238e81724ea3529722522c3702fd3aa674add5eb9807002",
-    strip_prefix = "rules_flex-{0}".format(rules_flex_version),
-    urls = ["https://github.com/jmillikin/rules_flex/archive/{0}.tar.gz".format(rules_flex_version)],
+    sha256 = "8929fedc40909d19a4b42548d0785f796c7677dcef8b5d1600b415e5a4a7749f",
+    urls = ["https://github.com/jmillikin/rules_flex/releases/download/v{0}/rules_flex-v{0}.tar.xz".format(rules_flex_version)],
 )
 
 load("@rules_flex//flex:flex.bzl", "flex_register_toolchains")
@@ -190,20 +195,12 @@ load("@rules_flex//flex:flex.bzl", "flex_register_toolchains")
 # fix them anyways.
 flex_register_toolchains(extra_copts = ["-w"])
 
-# TODO: Can switch to a normal release version when it includes:
-# https://github.com/jmillikin/rules_bison/commit/478079b28605a38000eaf83719568d756b3383a0
-rules_bison_version = "478079b28605a38000eaf83719568d756b3383a0"
+rules_bison_version = "0.2.2"
 
 http_archive(
     name = "rules_bison",
-    patch_args = ["-p1"],
-    patches = [
-        # Trying to upstream: https://github.com/jmillikin/rules_bison/pull/13
-        "@carbon//bazel/patches/bison:0001_Support_Bison_building_on_FreeBSD.patch",
-    ],
-    sha256 = "6bc2d382e4ffccd66e60a74521c24722fc8fdfe9af49ff182f79bb5994fa1ba4",
-    strip_prefix = "rules_bison-{0}".format(rules_bison_version),
-    urls = ["https://github.com/jmillikin/rules_bison/archive/{0}.tar.gz".format(rules_bison_version)],
+    sha256 = "2279183430e438b2dc77cacd7b1dbb63438971b2411406570f1ddd920b7c9145",
+    urls = ["https://github.com/jmillikin/rules_bison/releases/download/v{0}/rules_bison-v{0}.tar.xz".format(rules_bison_version)],
 )
 
 load("@rules_bison//bison:bison.bzl", "bison_register_toolchains")
@@ -274,3 +271,32 @@ local_repository(
     name = "woff2_carbon",
     path = "third_party/examples/woff2/carbon",
 )
+
+###############################################################################
+# Treesitter rules
+###############################################################################
+
+http_archive(
+    name = "rules_nodejs",
+    sha256 = "d124665ea12f89153086746821cf6c9ef93ab88360a50c1aeefa1fe522421704",
+    strip_prefix = "rules_nodejs-6.0.0-beta1",
+    url = "https://github.com/bazelbuild/rules_nodejs/releases/download/v6.0.0-beta1/rules_nodejs-v6.0.0-beta1.tar.gz",
+)
+
+load("@rules_nodejs//nodejs:repositories.bzl", "DEFAULT_NODE_VERSION", "nodejs_register_toolchains")
+
+nodejs_register_toolchains(
+    name = "nodejs",
+    node_version = DEFAULT_NODE_VERSION,
+)
+
+http_archive(
+    name = "rules_tree_sitter",
+    sha256 = "a09f177a2b8acb2f8a84def6ca0c41a5bd26b25634aa7313f22ade6c54e57ca1",
+    strip_prefix = "rules_tree_sitter-bc3a2131053207de7dfd9b24046b811ce770e35d",
+    urls = ["https://github.com/Maan2003/rules_tree_sitter/archive/bc3a2131053207de7dfd9b24046b811ce770e35d.tar.gz"],
+)
+
+load("@rules_tree_sitter//tree_sitter:tree_sitter.bzl", "tree_sitter_register_toolchains")
+
+tree_sitter_register_toolchains()

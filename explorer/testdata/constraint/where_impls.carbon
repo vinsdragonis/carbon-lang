@@ -3,10 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: i32.F
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -15,7 +11,7 @@ interface Base {
 }
 
 interface Extension {
-  extends Base;
+  extend Base;
 }
 
 fn F[T:! type where .Self impls Extension](x: T) {
@@ -31,3 +27,6 @@ fn Main() -> i32 {
   F(n);
   return 0;
 }
+
+// CHECK:STDOUT: i32.F
+// CHECK:STDOUT: result: 0

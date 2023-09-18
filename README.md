@@ -296,10 +296,22 @@ Learn more about the Carbon project:
 
 Past Carbon focused talks from the community:
 
+### 2022
+
 -   [Carbon Language: An experimental successor to C++](https://www.youtube.com/watch?v=omrY53kbVoA),
-    CppNorth 2022
+    CppNorth
 -   [Carbon Language: Syntax and trade-offs](https://www.youtube.com/watch?v=9Y2ivB8VaIs),
-    Core C++ 2022
+    Core C++
+
+### 2023
+
+-   [Carbon’s Successor Strategy: From C++ interop to memory safety](https://www.youtube.com/watch?v=1ZTJ9omXOQ0),
+    C++Now
+-   Definition-Checked Generics
+    ([Part 1](https://www.youtube.com/watch?v=FKC8WACSMP0),
+    [Part 2](https://www.youtube.com/watch?v=VxQ3PwxiSzk)), C++Now
+-   [Modernizing Compiler Design for Carbon’s Toolchain](https://www.youtube.com/watch?v=ZI198eFghJk),
+    C++Now
 
 ## Join us
 
@@ -322,7 +334,7 @@ contribute.
 
 You can also directly:
 
--   [Contribute the language design](CONTRIBUTING.md#contributing-to-the-language-design):
+-   [Contribute to the language design](CONTRIBUTING.md#contributing-to-the-language-design):
     feedback on design, new design proposal
 -   [Contribute to the language implementation](CONTRIBUTING.md#contributing-to-the-language-implementation)
     -   [Carbon Explorer](/explorer/): bug report, bug fix, language feature

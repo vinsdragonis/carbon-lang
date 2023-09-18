@@ -3,10 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: H 22
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -33,14 +29,14 @@ class MyOptional(T:! type){
     }
 
     fn get[self: Self] () -> T {
-        var y: T;
         var x: MyOptionalElement(T) = self.element;
         match(x){
             case MyOptionalElement(T).Element( var x: T ) =>{
                 return x;
             }
         }
-        return y;
+        // TODO: Mark this as unreachable somehow.
+        return get();
     }
 
    var element: MyOptionalElement(T);
@@ -54,3 +50,6 @@ fn Main() -> i32 {
 
   return 0;
 }
+
+// CHECK:STDOUT: H 22
+// CHECK:STDOUT: result: 0

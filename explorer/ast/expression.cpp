@@ -9,8 +9,8 @@
 
 #include "explorer/ast/pattern.h"
 #include "explorer/ast/value.h"
-#include "explorer/common/arena.h"
-#include "explorer/common/error_builders.h"
+#include "explorer/base/arena.h"
+#include "explorer/base/error_builders.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
@@ -31,6 +31,7 @@ auto IntrinsicExpression::FindIntrinsic(std::string_view name,
       {{"print", Intrinsic::Print},
        {"new", Intrinsic::Alloc},
        {"delete", Intrinsic::Dealloc},
+       {"print_allocs", Intrinsic::PrintAllocs},
        {"rand", Intrinsic::Rand},
        {"implicit_as", Intrinsic::ImplicitAs},
        {"implicit_as_convert", Intrinsic::ImplicitAsConvert},
@@ -62,6 +63,8 @@ auto IntrinsicExpression::name() const -> std::string_view {
       return "__intrinsic_new";
     case IntrinsicExpression::Intrinsic::Dealloc:
       return "__intrinsic_delete";
+    case IntrinsicExpression::Intrinsic::PrintAllocs:
+      return "__intrinsic_print_allocs";
     case IntrinsicExpression::Intrinsic::Rand:
       return "__intrinsic_rand";
     case IntrinsicExpression::Intrinsic::ImplicitAs:
@@ -287,8 +290,11 @@ void Expression::Print(llvm::raw_ostream& out) const {
     }
     case ExpressionKind::ArrayTypeLiteral: {
       const auto& array_literal = cast<ArrayTypeLiteral>(*this);
-      out << "[" << array_literal.element_type_expression() << "; "
-          << array_literal.size_expression() << "]";
+      out << "[" << array_literal.element_type_expression() << ";";
+      if (array_literal.has_size_expression()) {
+        out << " " << array_literal.size_expression();
+      }
+      out << "]";
       break;
     }
     case ExpressionKind::IdentifierExpression:
@@ -337,12 +343,12 @@ void Expression::PrintID(llvm::raw_ostream& out) const {
     case ExpressionKind::TypeTypeLiteral:
       out << "type";
       break;
-    case ExpressionKind::FunctionTypeLiteral:
-    case ExpressionKind::StructLiteral:
-    case ExpressionKind::ArrayTypeLiteral:
     case ExpressionKind::ValueLiteral:
       out << cast<ConstantValueLiteral>(*this).constant_value();
       break;
+    case ExpressionKind::ArrayTypeLiteral:
+    case ExpressionKind::FunctionTypeLiteral:
+    case ExpressionKind::StructLiteral:
     case ExpressionKind::IndexExpression:
     case ExpressionKind::SimpleMemberAccessExpression:
     case ExpressionKind::CompoundMemberAccessExpression:

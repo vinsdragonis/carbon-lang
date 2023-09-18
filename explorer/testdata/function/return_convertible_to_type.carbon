@@ -3,14 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
 class TypeLike {
-  impl as ImplicitAs(type) {
+  extend impl as ImplicitAs(type) {
     fn Convert[self: Self]() -> type { return i32; }
   }
   fn Make() -> Self { return {}; }
@@ -19,3 +16,5 @@ class TypeLike {
 fn Main() -> TypeLike.Make() {
   return 0;
 }
+
+// CHECK:STDOUT: result: 0

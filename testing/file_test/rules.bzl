@@ -2,11 +2,43 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-"""Rules for building fuzz tests."""
+"""Rules for building file tests.
 
-load("@bazel_skylib//rules:native_binary.bzl", "native_test")
+file_test uses the tests_as_input_file rule to transform test dependencies into
+a file which can be accessed as a list. This avoids long argument parsing.
+"""
 
-def file_test(name, srcs, deps, tests, shard_count = 1):
+load("@rules_cc//cc:defs.bzl", "cc_test")
+
+DataFilesInfo = provider(
+    "Data files for this target.",
+    fields = {
+        "data_files": "Data files for this target",
+    },
+)
+
+def _tests_as_input_file_rule_impl(ctx):
+    data_files = []
+    for tests in ctx.attr.data:
+        data_files.extend(
+            [f.path for f in tests[DefaultInfo].data_runfiles.files.to_list()],
+        )
+        data_files.extend(
+            [f.path for f in tests[DefaultInfo].files.to_list()],
+        )
+    ctx.actions.write(ctx.outputs.data_files, "\n".join(data_files) + "\n")
+
+_tests_as_input_file_rule = rule(
+    attrs = {
+        "data": attr.label_list(allow_files = True),
+    },
+    outputs = {
+        "data_files": "%{name}.txt",
+    },
+    implementation = _tests_as_input_file_rule_impl,
+)
+
+def file_test(name, tests, data = [], args = [], **kwargs):
     """Generates tests using the file_test base.
 
     There will be one main test using `name` that can be sharded, and includes
@@ -15,26 +47,22 @@ def file_test(name, srcs, deps, tests, shard_count = 1):
 
     Args:
       name: The base name of the tests.
-      srcs: cc_test srcs.
-      deps: cc_test deps.
-      tests: The list of test files to use as data.
-      shard_count: The number of shards to use; defaults to 1.
+      tests: The list of test files to use as data, typically a glob.
+      data: Passed to cc_test.
+      args: Passed to cc_test.
+      **kwargs: Passed to cc_test.
     """
-    subset_name = "{0}.subset".format(name)
 
-    native.cc_test(
-        name = name,
-        srcs = srcs,
-        deps = deps,
+    # Ensure tests are always a filegroup for tests_as_input_file_rule.
+    tests_file = "{0}.tests".format(name)
+    _tests_as_input_file_rule(
+        name = tests_file,
         data = tests,
-        args = ["$(location {0})".format(x) for x in tests],
-        shard_count = shard_count,
+        testonly = 1,
     )
-
-    native_test(
-        name = subset_name,
-        src = name,
-        out = subset_name,
-        data = tests,
-        tags = ["manual"],
+    cc_test(
+        name = name,
+        data = [tests_file] + tests + data,
+        args = ["--test_targets_file=$(rootpath :{0})".format(tests_file)] + args,
+        **kwargs
     )

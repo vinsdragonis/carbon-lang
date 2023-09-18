@@ -2,6 +2,9 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+load("@rules_python//python:defs.bzl", "py_library", "py_test")
+
 package(default_visibility = ["//explorer/parse_and_execute:__pkg__"])
 
 cc_library(
@@ -15,8 +18,8 @@ cc_test(
     srcs = ["parse_test.cpp"],
     deps = [
         ":syntax",
-        "//common:gtest_main",
-        "//explorer/common:arena",
+        "//explorer/base:arena",
+        "//testing/base:gtest_main",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -42,8 +45,9 @@ cc_library(
         ":syntax",
         "//common:error",
         "//explorer/ast",
-        "//explorer/common:arena",
-        "//explorer/common:nonnull",
+        "//explorer/base:arena",
+        "//explorer/base:nonnull",
+        "@llvm-project//llvm:Support",
     ],
 )
 
@@ -85,9 +89,10 @@ cc_library(
         "//explorer/ast",
         "//explorer/ast:expression_category",
         "//explorer/ast:paren_contents",
-        "//explorer/common:arena",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
+        "//explorer/base:arena",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:source_location",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -145,8 +150,8 @@ cc_test(
     deps = [
         ":parse_test_matchers",
         ":syntax",
-        "//common:gtest_main",
         "//explorer/ast:ast_test_matchers",
+        "//testing/base:gtest_main",
         "@com_google_googletest//:gtest",
     ],
 )

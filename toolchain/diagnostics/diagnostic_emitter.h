@@ -15,6 +15,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/raw_ostream.h"
 #include "toolchain/diagnostics/diagnostic_kind.h"
 
@@ -41,20 +42,22 @@ enum class DiagnosticLevel : int8_t {
 // See `DiagnosticEmitter::Emit` for comments about argument lifetimes.
 #define CARBON_DIAGNOSTIC(DiagnosticName, Level, Format, ...) \
   static constexpr auto DiagnosticName =                      \
-      Internal::DiagnosticBase<__VA_ARGS__>(                  \
+      ::Carbon::Internal::DiagnosticBase<__VA_ARGS__>(        \
           ::Carbon::DiagnosticKind::DiagnosticName,           \
           ::Carbon::DiagnosticLevel::Level, Format)
 
+// A location for a diagnostic in a file. The lifetime of a DiagnosticLocation
+// is required to be less than SourceBuffer that it refers to due to the
+// contained file_name and line references.
 struct DiagnosticLocation {
   // Name of the file or buffer that this diagnostic refers to.
-  // TODO: Move this out of DiagnosticLocation, as part of an expectation that
-  // files will be compiled separately, so storing the file's path
-  // per-diagnostic is wasteful.
-  std::string file_name;
+  llvm::StringRef file_name;
+  // A reference to the line of the error.
+  llvm::StringRef line;
   // 1-based line number.
-  int32_t line_number;
+  int32_t line_number = -1;
   // 1-based column number.
-  int32_t column_number;
+  int32_t column_number = -1;
 };
 
 // A message composing a diagnostic. This may be the main message, but can also
@@ -62,10 +65,10 @@ struct DiagnosticLocation {
 struct DiagnosticMessage {
   explicit DiagnosticMessage(
       DiagnosticKind kind, DiagnosticLocation location,
-      llvm::StringLiteral format, llvm::SmallVector<llvm::Any, 0> format_args,
+      llvm::StringLiteral format, llvm::SmallVector<llvm::Any> format_args,
       std::function<std::string(const DiagnosticMessage&)> format_fn)
       : kind(kind),
-        location(std::move(location)),
+        location(location),
         format(format),
         format_args(std::move(format_args)),
         format_fn(std::move(format_fn)) {}
@@ -86,7 +89,7 @@ struct DiagnosticMessage {
   // without needing to parse the formatted string; however, it should be
   // understood that diagnostic formats are subject to change and the llvm::Any
   // offers limited compile-time type safety. Integration tests are required.
-  llvm::SmallVector<llvm::Any, 0> format_args;
+  llvm::SmallVector<llvm::Any> format_args;
 
   // Returns the formatted string. By default, this uses llvm::formatv.
   std::function<std::string(const DiagnosticMessage&)> format_fn;
@@ -188,6 +191,9 @@ using NoTypeDeduction = std::common_type_t<Arg>;
 
 }  // namespace Internal
 
+template <typename LocationT, typename AnnotateFn>
+class DiagnosticAnnotationScope;
+
 // Manages the creation of reports, the testing if diagnostics are enabled, and
 // the collection of reports.
 //
@@ -204,6 +210,10 @@ class DiagnosticEmitter {
   // expected usage.
   class DiagnosticBuilder {
    public:
+    // DiagnosticBuilder is move-only and cannot be copied.
+    DiagnosticBuilder(DiagnosticBuilder&&) = default;
+    DiagnosticBuilder& operator=(DiagnosticBuilder&&) = default;
+
     // Adds a note diagnostic attached to the main diagnostic being built.
     // The API mirrors the main emission API: `DiagnosticEmitter::Emit`.
     // For the expected usage see the builder API: `DiagnosticEmitter::Build`.
@@ -213,8 +223,8 @@ class DiagnosticEmitter {
               Internal::NoTypeDeduction<Args>... args) -> DiagnosticBuilder& {
       CARBON_CHECK(diagnostic_base.Level == DiagnosticLevel::Note)
           << static_cast<int>(diagnostic_base.Level);
-      diagnostic_.notes.push_back(
-          MakeMessage(location, diagnostic_base, std::move(args)...));
+      diagnostic_.notes.push_back(MakeMessage(
+          emitter_, location, diagnostic_base, {llvm::Any(args)...}));
       return *this;
     }
 
@@ -222,6 +232,9 @@ class DiagnosticEmitter {
     // For the expected usage see the builder API: `DiagnosticEmitter::Build`.
     template <typename... Args>
     auto Emit() -> void {
+      for (auto* annotator_ : emitter_->annotators_) {
+        annotator_->Annotate(*this);
+      }
       emitter_->consumer_->HandleDiagnostic(std::move(diagnostic_));
     }
 
@@ -232,22 +245,23 @@ class DiagnosticEmitter {
     explicit DiagnosticBuilder(
         DiagnosticEmitter<LocationT>* emitter, LocationT location,
         const Internal::DiagnosticBase<Args...>& diagnostic_base,
-        Internal::NoTypeDeduction<Args>... args)
+        llvm::SmallVector<llvm::Any> args)
         : emitter_(emitter),
-          diagnostic_({.level = diagnostic_base.Level,
-                       .message = MakeMessage(location, diagnostic_base,
-                                              std::move(args)...)}) {
+          diagnostic_(
+              {.level = diagnostic_base.Level,
+               .message = MakeMessage(emitter, location, diagnostic_base,
+                                      std::move(args))}) {
       CARBON_CHECK(diagnostic_base.Level != DiagnosticLevel::Note);
     }
 
     template <typename... Args>
-    auto MakeMessage(LocationT location,
-                     const Internal::DiagnosticBase<Args...>& diagnostic_base,
-                     Internal::NoTypeDeduction<Args>... args)
-        -> DiagnosticMessage {
+    static auto MakeMessage(
+        DiagnosticEmitter<LocationT>* emitter, LocationT location,
+        const Internal::DiagnosticBase<Args...>& diagnostic_base,
+        llvm::SmallVector<llvm::Any> args) -> DiagnosticMessage {
       return DiagnosticMessage(
-          diagnostic_base.Kind, emitter_->translator_->GetLocation(location),
-          diagnostic_base.Format, {std::move(args)...},
+          diagnostic_base.Kind, emitter->translator_->GetLocation(location),
+          diagnostic_base.Format, std::move(args),
           [&diagnostic_base](const DiagnosticMessage& message) -> std::string {
             return diagnostic_base.FormatFn(message);
           });
@@ -273,7 +287,7 @@ class DiagnosticEmitter {
   auto Emit(LocationT location,
             const Internal::DiagnosticBase<Args...>& diagnostic_base,
             Internal::NoTypeDeduction<Args>... args) -> void {
-    DiagnosticBuilder(this, location, diagnostic_base, std::move(args)...)
+    DiagnosticBuilder(this, location, diagnostic_base, {llvm::Any(args)...})
         .Emit();
   }
 
@@ -288,12 +302,41 @@ class DiagnosticEmitter {
              const Internal::DiagnosticBase<Args...>& diagnostic_base,
              Internal::NoTypeDeduction<Args>... args) -> DiagnosticBuilder {
     return DiagnosticBuilder(this, location, diagnostic_base,
-                             std::move(args)...);
+                             {llvm::Any(args)...});
   }
 
  private:
+  // Base class for scopes in which we perform diagnostic annotation, such as
+  // adding notes with contextual information.
+  class DiagnosticAnnotationScopeBase {
+   public:
+    virtual auto Annotate(DiagnosticBuilder& builder) -> void = 0;
+
+    DiagnosticAnnotationScopeBase(const DiagnosticAnnotationScopeBase&) =
+        delete;
+    DiagnosticAnnotationScopeBase& operator=(
+        const DiagnosticAnnotationScopeBase&) = delete;
+
+   protected:
+    DiagnosticAnnotationScopeBase(DiagnosticEmitter* emitter)
+        : emitter_(emitter) {
+      emitter_->annotators_.push_back(this);
+    }
+    ~DiagnosticAnnotationScopeBase() {
+      CARBON_CHECK(emitter_->annotators_.back() == this);
+      emitter_->annotators_.pop_back();
+    }
+
+   private:
+    DiagnosticEmitter* emitter_;
+  };
+
+  template <typename LocT, typename AnnotateFn>
+  friend class DiagnosticAnnotationScope;
+
   DiagnosticLocationTranslator<LocationT>* translator_;
   DiagnosticConsumer* consumer_;
+  llvm::SmallVector<DiagnosticAnnotationScopeBase*> annotators_;
 };
 
 class StreamDiagnosticConsumer : public DiagnosticConsumer {
@@ -308,10 +351,19 @@ class StreamDiagnosticConsumer : public DiagnosticConsumer {
     }
   }
   auto Print(const DiagnosticMessage& message) -> void {
-    *stream_ << message.location.file_name << ":"
-             << message.location.line_number << ":"
-             << message.location.column_number << ": "
-             << message.format_fn(message) << "\n";
+    *stream_ << message.location.file_name;
+    if (message.location.line_number > 0) {
+      *stream_ << ":" << message.location.line_number;
+      if (message.location.column_number > 0) {
+        *stream_ << ":" << message.location.column_number;
+      }
+    }
+    *stream_ << ": " << message.format_fn(message) << "\n";
+    if (message.location.column_number > 0) {
+      *stream_ << message.location.line << "\n";
+      stream_->indent(message.location.column_number - 1);
+      *stream_ << "^\n";
+    }
   }
 
  private:
@@ -345,6 +397,39 @@ class ErrorTrackingDiagnosticConsumer : public DiagnosticConsumer {
   DiagnosticConsumer* next_consumer_;
   bool seen_error_ = false;
 };
+
+// An RAII object that denotes a scope in which any diagnostic produced should
+// be annotated in some way.
+//
+// This object is given a function `annotate` that will be called with a
+// `DiagnosticBuilder& builder` for any diagnostic that is emitted through the
+// given emitter. That function can annotate the diagnostic by calling
+// `builder.Note` to add notes.
+template <typename LocationT, typename AnnotateFn>
+class DiagnosticAnnotationScope
+    : private DiagnosticEmitter<LocationT>::DiagnosticAnnotationScopeBase {
+  using Base =
+      typename DiagnosticEmitter<LocationT>::DiagnosticAnnotationScopeBase;
+
+ public:
+  DiagnosticAnnotationScope(DiagnosticEmitter<LocationT>* emitter,
+                            AnnotateFn annotate)
+      : Base(emitter), annotate_(annotate) {}
+
+ private:
+  auto Annotate(
+      typename DiagnosticEmitter<LocationT>::DiagnosticBuilder& builder)
+      -> void override {
+    annotate_(builder);
+  }
+
+  AnnotateFn annotate_;
+};
+
+template <typename LocationT, typename AnnotateFn>
+DiagnosticAnnotationScope(DiagnosticEmitter<LocationT>* emitter,
+                          AnnotateFn annotate)
+    -> DiagnosticAnnotationScope<LocationT, AnnotateFn>;
 
 }  // namespace Carbon
 

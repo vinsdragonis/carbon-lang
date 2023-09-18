@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 4213
 
 package ExplorerTest api;
 
@@ -23,3 +20,5 @@ fn add[T:! IntLike](x: {.a: T, .b: ({.m: i32, .n: T}, i32)}) -> i32 {
 fn Main() -> i32 {
   return add({.b = ({.n = 1, .m = 2}, 3), .a = 4});
 }
+
+// CHECK:STDOUT: result: 4213

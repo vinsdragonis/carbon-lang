@@ -3,14 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: Class C, call 0
-// CHECK:STDOUT: Class D, call 0
-// CHECK:STDOUT: Class C, call 1
-// CHECK:STDOUT: Class C, call 2
-// CHECK:STDOUT: Class D, call 2
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -20,7 +12,8 @@ base class C {
   }
 }
 
-class D extends C {
+class D {
+  extend base: C;
   fn FunctionD(var i: i32) {
     C.FunctionC(i);
     Print("Class D, call {0}", i);
@@ -38,3 +31,10 @@ fn Main() -> i32 {
   d.FunctionD(2);
   return 0;
 }
+
+// CHECK:STDOUT: Class C, call 0
+// CHECK:STDOUT: Class D, call 0
+// CHECK:STDOUT: Class C, call 1
+// CHECK:STDOUT: Class C, call 2
+// CHECK:STDOUT: Class D, call 2
+// CHECK:STDOUT: result: 0

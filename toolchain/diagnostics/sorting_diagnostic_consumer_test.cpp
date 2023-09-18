@@ -8,13 +8,13 @@
 #include <gtest/gtest.h>
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/FormatVariadic.h"
 #include "toolchain/diagnostics/diagnostic_emitter.h"
 #include "toolchain/diagnostics/mocks.h"
 
-namespace Carbon::Testing {
+namespace Carbon {
 namespace {
 
+using ::Carbon::Testing::IsDiagnostic;
 using ::testing::InSequence;
 
 CARBON_DIAGNOSTIC(TestDiagnostic, Error, "{0}", llvm::StringRef);
@@ -32,12 +32,12 @@ TEST(SortedDiagnosticEmitterTest, SortErrors) {
   SortingDiagnosticConsumer sorting_consumer(consumer);
   DiagnosticEmitter<DiagnosticLocation> emitter(translator, sorting_consumer);
 
-  emitter.Emit({"f", 2, 1}, TestDiagnostic, "M1");
-  emitter.Emit({"f", 1, 1}, TestDiagnostic, "M2");
-  emitter.Emit({"f", 1, 3}, TestDiagnostic, "M3");
-  emitter.Emit({"f", 3, 4}, TestDiagnostic, "M4");
-  emitter.Emit({"f", 3, 2}, TestDiagnostic, "M5");
-  emitter.Emit({"f", 3, 2}, TestDiagnostic, "M6");
+  emitter.Emit({"f", "line", 2, 1}, TestDiagnostic, "M1");
+  emitter.Emit({"f", "line", 1, 1}, TestDiagnostic, "M2");
+  emitter.Emit({"f", "line", 1, 3}, TestDiagnostic, "M3");
+  emitter.Emit({"f", "line", 3, 4}, TestDiagnostic, "M4");
+  emitter.Emit({"f", "line", 3, 2}, TestDiagnostic, "M5");
+  emitter.Emit({"f", "line", 3, 2}, TestDiagnostic, "M6");
 
   InSequence s;
   EXPECT_CALL(consumer, HandleDiagnostic(
@@ -62,4 +62,4 @@ TEST(SortedDiagnosticEmitterTest, SortErrors) {
 }
 
 }  // namespace
-}  // namespace Carbon::Testing
+}  // namespace Carbon

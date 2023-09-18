@@ -12,6 +12,7 @@
 #include "common/ostream.h"
 #include "explorer/ast/statement.h"
 #include "explorer/ast/value.h"
+#include "explorer/base/trace_stream.h"
 #include "explorer/interpreter/action.h"
 
 namespace Carbon {
@@ -20,18 +21,21 @@ namespace Carbon {
 enum class Phase { CompileTime, RunTime };
 
 // The stack of Actions currently being executed by the interpreter.
-class ActionStack {
+class ActionStack : public Printable<ActionStack> {
  public:
   // Constructs an empty compile-time ActionStack.
-  ActionStack() : phase_(Phase::CompileTime) {}
+  explicit ActionStack(Nonnull<TraceStream*> trace_stream)
+      : phase_(Phase::CompileTime), trace_stream_(trace_stream) {}
 
   // Constructs an empty run-time ActionStack that allocates global variables
   // on `heap`.
-  explicit ActionStack(Nonnull<HeapAllocationInterface*> heap)
-      : globals_(RuntimeScope(heap)), phase_(Phase::RunTime) {}
+  explicit ActionStack(Nonnull<TraceStream*> trace_stream,
+                       Nonnull<HeapAllocationInterface*> heap)
+      : globals_(RuntimeScope(heap)),
+        phase_(Phase::RunTime),
+        trace_stream_(trace_stream) {}
 
   void Print(llvm::raw_ostream& out) const;
-  LLVM_DUMP_METHOD void Dump() const { Print(llvm::errs()); }
 
   // Starts execution with `action` at the top of the stack. Cannot be called
   // when IsEmpty() is false.
@@ -104,7 +108,22 @@ class ActionStack {
   auto UnwindPast(Nonnull<const Statement*> ast_node,
                   Nonnull<const Value*> result) -> ErrorOr<Success>;
 
-  void Pop() { todo_.Pop(); }
+  auto Pop() -> std::unique_ptr<Action> {
+    auto popped_action = todo_.Pop();
+    if (trace_stream_->is_enabled()) {
+      trace_stream_->Pop() << "stack-pop:  " << *popped_action << " ("
+                           << popped_action->source_loc() << ")\n";
+    }
+    return popped_action;
+  }
+
+  void Push(std::unique_ptr<Action> action) {
+    if (trace_stream_->is_enabled()) {
+      trace_stream_->Push()
+          << "stack-push: " << *action << " (" << action->source_loc() << ")\n";
+    }
+    todo_.Push(std::move(action));
+  }
 
   auto size() const -> int { return todo_.size(); }
 
@@ -136,6 +155,7 @@ class ActionStack {
   std::optional<Nonnull<const Value*>> result_;
   std::optional<RuntimeScope> globals_;
   Phase phase_;
+  Nonnull<TraceStream*> trace_stream_;
 };
 
 }  // namespace Carbon

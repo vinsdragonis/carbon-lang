@@ -3,17 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: XYZ: 1
-// CHECK:STDOUT: XY: 1
-// CHECK:STDOUT: XZ: 1
-// CHECK:STDOUT: YZ: 2
-// CHECK:STDOUT: JustX: 1
-// CHECK:STDOUT: JustY: 2
-// CHECK:STDOUT: JustZ: 3
-// CHECK:STDOUT: None: 4
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -26,16 +15,16 @@ interface Y {}
 interface Z {}
 
 __match_first {
-  external impl forall [T:! X] T as A {
+  impl forall [T:! X] T as A {
     fn Which() -> i32 { return 1; }
   }
-  external impl forall [T:! Y] T as A {
+  impl forall [T:! Y] T as A {
     fn Which() -> i32 { return 2; }
   }
-  external impl forall [T:! Z] T as A {
+  impl forall [T:! Z] T as A {
     fn Which() -> i32 { return 3; }
   }
-  external impl forall [T:! type] T as A {
+  impl forall [T:! type] T as A {
     fn Which() -> i32 { return 4; }
   }
 }
@@ -68,3 +57,13 @@ fn Main() -> i32 {
   Print("None: {0}", None.(A.Which)());
   return 0;
 }
+
+// CHECK:STDOUT: XYZ: 1
+// CHECK:STDOUT: XY: 1
+// CHECK:STDOUT: XZ: 1
+// CHECK:STDOUT: YZ: 2
+// CHECK:STDOUT: JustX: 1
+// CHECK:STDOUT: JustY: 2
+// CHECK:STDOUT: JustZ: 3
+// CHECK:STDOUT: None: 4
+// CHECK:STDOUT: result: 0

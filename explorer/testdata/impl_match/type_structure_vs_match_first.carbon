@@ -3,13 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: A(T) as B(i32)
-// CHECK:STDOUT: A(T) as B(U)
-// CHECK:STDOUT: A(i32) as B(T)
-// CHECK:STDOUT: A(i32) as B(T)
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -21,19 +14,19 @@ interface B(T:! type) {
 // Note: this match_first has no effect, because it only orders impls with the
 // same type structure.
 __match_first {
-  external impl forall [T:! type] A(T) as B(i32) {
+  impl forall [T:! type] A(T) as B(i32) {
     fn F() {
       Print("A(T) as B(i32)");
     }
   }
-  external impl forall [T:! type] A(i32) as B(T) {
+  impl forall [T:! type] A(i32) as B(T) {
     fn F() {
       Print("A(i32) as B(T)");
     }
   }
 }
 
-external impl forall [T:! type, U:! type] A(T) as B(U) {
+impl forall [T:! type, U:! type] A(T) as B(U) {
   fn F() {
     Print("A(T) as B(U)");
   }
@@ -55,3 +48,9 @@ fn Main() -> i32 {
   G(b);
   return 0;
 }
+
+// CHECK:STDOUT: A(T) as B(i32)
+// CHECK:STDOUT: A(T) as B(U)
+// CHECK:STDOUT: A(i32) as B(T)
+// CHECK:STDOUT: A(i32) as B(T)
+// CHECK:STDOUT: result: 0

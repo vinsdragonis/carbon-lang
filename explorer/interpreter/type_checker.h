@@ -18,13 +18,14 @@
 #include "explorer/ast/expression.h"
 #include "explorer/ast/statement.h"
 #include "explorer/ast/value.h"
-#include "explorer/common/nonnull.h"
-#include "explorer/common/trace_stream.h"
+#include "explorer/base/nonnull.h"
+#include "explorer/base/trace_stream.h"
 #include "explorer/interpreter/builtins.h"
 #include "explorer/interpreter/dictionary.h"
 #include "explorer/interpreter/impl_scope.h"
 #include "explorer/interpreter/interpreter.h"
 #include "explorer/interpreter/matching_impl_set.h"
+#include "explorer/interpreter/stack_space.h"
 #include "llvm/ADT/identity.h"
 
 namespace Carbon {
@@ -134,7 +135,8 @@ class TypeChecker {
 
   // Determine whether the given intrinsic constraint is known to be satisfied
   // in the given scope.
-  auto IsIntrinsicConstraintSatisfied(const IntrinsicConstraint& constraint,
+  auto IsIntrinsicConstraintSatisfied(SourceLocation source_loc,
+                                      const IntrinsicConstraint& constraint,
                                       const ImplScope& impl_scope) const
       -> ErrorOr<bool>;
 
@@ -191,6 +193,9 @@ class TypeChecker {
   // `values` maps variable names to their compile-time values. It is not
   //    directly used in this function but is passed to InterpExp.
   auto TypeCheckExp(Nonnull<Expression*> e, const ImplScope& impl_scope)
+      -> ErrorOr<Success>;
+  // For RunWithExtraStack.
+  auto TypeCheckExpImpl(Nonnull<Expression*> e, const ImplScope& impl_scope)
       -> ErrorOr<Success>;
 
   // Type checks and interprets `type_expression`, and validates it represents a
@@ -393,21 +398,14 @@ class TypeChecker {
                               SourceLocation source_loc) -> ErrorOr<Success>;
 
   // Returns the field names of the class together with their types.
-  auto FieldTypes(const NominalClassType& class_type) const
+  auto FieldTypes(SourceLocation source_loc, std::string_view context,
+                  const NominalClassType& class_type) const
       -> ErrorOr<std::vector<NamedValue>>;
 
   // Returns the field names and types of the class and its parents.
-  auto FieldTypesWithBase(const NominalClassType& class_type) const
+  auto FieldTypesWithBase(SourceLocation source_loc, std::string_view context,
+                          const NominalClassType& class_type) const
       -> ErrorOr<std::vector<NamedValue>>;
-
-  // Returns true if source_fields and destination_fields contain the same set
-  // of names, and each value in source_fields is implicitly convertible to
-  // the corresponding value in destination_fields. All values in both arguments
-  // must be types.
-  auto FieldTypesImplicitlyConvertible(
-      llvm::ArrayRef<NamedValue> source_fields,
-      llvm::ArrayRef<NamedValue> destination_fields,
-      const ImplScope& impl_scope) const -> ErrorOr<bool>;
 
   // Returns true if *source is implicitly convertible to *destination. *source
   // and *destination must be concrete types.
@@ -415,10 +413,20 @@ class TypeChecker {
   // If allow_user_defined_conversions, conversions requiring a user-defined
   // `ImplicitAs` implementation are not considered, and only builtin
   // conversions will be allowed.
-  auto IsImplicitlyConvertible(Nonnull<const Value*> source,
+  auto IsImplicitlyConvertible(SourceLocation source_loc,
+                               Nonnull<const Value*> source,
                                Nonnull<const Value*> destination,
                                const ImplScope& impl_scope,
                                bool allow_user_defined_conversions) const
+      -> ErrorOr<bool>;
+
+  // Returns true if the conversion from `source` to `destination` is a builtin
+  // conversion that `BuildBuiltinConversion` can perform.
+  auto IsBuiltinConversion(SourceLocation source_loc,
+                           Nonnull<const Value*> source,
+                           Nonnull<const Value*> destination,
+                           const ImplScope& impl_scope,
+                           bool allow_user_defined_conversions) const
       -> ErrorOr<bool>;
 
   // Attempt to implicitly convert type-checked expression `source` to the type
@@ -437,7 +445,14 @@ class TypeChecker {
   auto BuildSubtypeConversion(Nonnull<Expression*> source,
                               Nonnull<const PointerType*> src_ptr,
                               Nonnull<const PointerType*> dest_ptr)
-      -> ErrorOr<Nonnull<const Expression*>>;
+      -> ErrorOr<Nonnull<Expression*>>;
+
+  // Build a builtin conversion of `source` to the type `destination`, if
+  // possible.
+  auto BuildBuiltinConversion(Nonnull<Expression*> source,
+                              Nonnull<const Value*> destination,
+                              const ImplScope& impl_scope)
+      -> ErrorOr<Nonnull<Expression*>>;
 
   // Determine whether `type1` and `type2` are considered to be the same type
   // in the given scope. This is true if they're structurally identical or if

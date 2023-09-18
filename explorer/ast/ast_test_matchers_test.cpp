@@ -11,9 +11,9 @@
 #include "explorer/ast/expression.h"
 #include "explorer/ast/pattern.h"
 #include "explorer/ast/statement.h"
-#include "explorer/common/arena.h"
+#include "explorer/base/arena.h"
 
-namespace Carbon::Testing {
+namespace Carbon {
 namespace {
 
 using ::testing::_;
@@ -21,7 +21,7 @@ using ::testing::ElementsAre;
 using ::testing::IsEmpty;
 using ::testing::Not;
 
-static constexpr SourceLocation DummyLoc("dummy", 0);
+static constexpr SourceLocation DummyLoc("dummy", 0, FileKind::Main);
 
 TEST(BlockContentsAreTest, BasicUsage) {
   Block empty_block(DummyLoc, {});
@@ -159,4 +159,4 @@ TEST(ASTDeclarationsTest, BasicUsage) {
 }
 
 }  // namespace
-}  // namespace Carbon::Testing
+}  // namespace Carbon

@@ -27,8 +27,9 @@ auto main(int argc, char** argv) -> int {
   // is piped to stdout.
   llvm::errs().tie(&llvm::outs());
 
-  llvm::SmallVector<llvm::StringRef, 16> args(argv + 1, argv + argc);
-  Carbon::Driver driver;
-  bool success = driver.RunFullCommand(args);
+  llvm::SmallVector<llvm::StringRef> args(argv + 1, argv + argc);
+  auto fs = llvm::vfs::getRealFileSystem();
+  Carbon::Driver driver(*fs, llvm::outs(), llvm::errs());
+  bool success = driver.RunCommand(args);
   return success ? EXIT_SUCCESS : EXIT_FAILURE;
 }

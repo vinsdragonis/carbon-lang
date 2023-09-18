@@ -35,8 +35,11 @@ class ExternalRepo(NamedTuple):
 # paths for that repository.
 EXTERNAL_REPOS: Dict[str, ExternalRepo] = {
     # llvm:include/llvm/Support/Error.h ->llvm/Support/Error.h
+    # clang-tools-extra/clangd:URI.h -> clang-tools-extra/clangd/URI.h
     "@llvm-project": ExternalRepo(
-        lambda x: re.sub("^(.*:(lib|include))/", "", x), "...", None
+        lambda x: re.sub(":", "/", re.sub("^(.*:(lib|include))/", "", x)),
+        "...",
+        None,
     ),
     # :src/google/protobuf/descriptor.h -> google/protobuf/descriptor.h
     # - protobuf_headers is specified because there are multiple overlapping
@@ -54,6 +57,14 @@ EXTERNAL_REPOS: Dict[str, ExternalRepo] = {
     ),
     # tools/cpp/runfiles:runfiles.h -> tools/cpp/runfiles/runfiles.h
     "@bazel_tools": ExternalRepo(lambda x: re.sub(":", "/", x), "...", None),
+    # absl/flags:flag.h -> absl/flags/flag.h
+    "@com_google_absl": ExternalRepo(
+        lambda x: re.sub(":", "/", x), "...", None
+    ),
+    # :re2/re2.h -> re2/re2.h
+    "@com_googlesource_code_re2": ExternalRepo(
+        lambda x: re.sub(":", "", x), ":re2", None
+    ),
 }
 
 # TODO: proto rules are aspect-based and their generated files don't show up in
@@ -61,6 +72,7 @@ EXTERNAL_REPOS: Dict[str, ExternalRepo] = {
 # Try using `bazel cquery --output=starlark` to print `target.files`.
 # For protobuf, need to add support for `alias` rule kind.
 IGNORE_HEADER_REGEX = re.compile("^(.*\\.pb\\.h)$")
+IGNORE_SOURCE_FILE_REGEX = re.compile("^third_party/clangd")
 
 
 class Rule(NamedTuple):
@@ -84,7 +96,6 @@ def remap_file(label: str) -> str:
         return path.replace(":", "/")
     assert repo in EXTERNAL_REPOS, repo
     return EXTERNAL_REPOS[repo].remap(path)
-    exit(f"Don't know how to remap label '{label}'")
 
 
 def get_bazel_list(list_child: ElementTree.Element, is_file: bool) -> Set[str]:
@@ -147,6 +158,8 @@ def get_rules(bazel: str, targets: str, keep_going: bool) -> Dict[str, Rule]:
             elif rule_class == "genrule":
                 if list_name == "outs":
                     outs = get_bazel_list(list_child, True)
+            elif rule_class == "tree_sitter_cc_library":
+                continue
             else:
                 exit(f"unexpected rule type: {rule_class}")
         rules[rule_name] = Rule(hdrs, srcs, deps, outs)
@@ -188,6 +201,9 @@ def get_missing_deps(
     for source_file in rule_files:
         if source_file in generated_files:
             continue
+        if IGNORE_SOURCE_FILE_REGEX.match(source_file):
+            continue
+
         with open(source_file, "r") as f:
             for header_groups in re.findall(
                 r'^(#include (?:"([^"]+)"|'
@@ -241,9 +257,10 @@ def main() -> None:
     external_rules = get_rules(bazel, external_repo_query, True)
 
     print("Building header map...")
-    header_to_rule_map: Dict[str, Set[str]] = {}
-    header_to_rule_map["gmock/gmock.h"] = {"@com_google_googletest//:gtest"}
-    header_to_rule_map["gtest/gtest.h"] = {"@com_google_googletest//:gtest"}
+    header_to_rule_map: Dict[str, Set[str]] = {
+        "gmock/gmock.h": {"@com_google_googletest//:gtest"},
+        "gtest/gtest.h": {"@com_google_googletest//:gtest"},
+    }
     map_headers(header_to_rule_map, carbon_rules)
     map_headers(header_to_rule_map, external_rules)
 

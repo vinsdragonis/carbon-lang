@@ -3,15 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: -5
 
 package ExplorerTest api;
 
 class A { var n: i32; }
 
-external impl A as Negate where .Result = A {
+impl A as Negate where .Result = A {
   fn Op[self: Self]() -> A { return {.n = -self.n}; }
 }
 
@@ -20,3 +17,5 @@ fn Main() -> i32 {
   a = -a;
   return a.n;
 }
+
+// CHECK:STDOUT: result: -5

@@ -5,6 +5,7 @@
 #include "explorer/ast/declaration.h"
 
 #include "explorer/ast/value.h"
+#include "explorer/base/print_as_id.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Casting.h"
 
@@ -14,105 +15,110 @@ using llvm::cast;
 
 Declaration::~Declaration() = default;
 
-void Declaration::Print(llvm::raw_ostream& out) const {
+void Declaration::Print(llvm::raw_ostream& out) const { PrintIndent(0, out); }
+void Declaration::PrintIndent(int indent_num_spaces,
+                              llvm::raw_ostream& out) const {
+  if (kind() != DeclarationKind::FunctionDeclaration &&
+      kind() != DeclarationKind::DestructorDeclaration) {
+    out.indent(indent_num_spaces);
+  }
+
   switch (kind()) {
     case DeclarationKind::NamespaceDeclaration:
-      PrintID(out);
-      out << ";";
+      out << PrintAsID(*this) << ";";
       break;
     case DeclarationKind::InterfaceDeclaration:
     case DeclarationKind::ConstraintDeclaration: {
       const auto& iface_decl = cast<ConstraintTypeDeclaration>(*this);
-      PrintID(out);
+      out << PrintAsID(*this);
       out << " {\n";
       for (Nonnull<Declaration*> m : iface_decl.members()) {
-        out << *m;
+        out.indent(indent_num_spaces + 2) << *m << "\n";
       }
-      out << "}\n";
+      out.indent(indent_num_spaces) << "}";
       break;
     }
     case DeclarationKind::ImplDeclaration: {
       const auto& impl_decl = cast<ImplDeclaration>(*this);
-      PrintID(out);
-      out << " {\n";
+      out << PrintAsID(impl_decl) << " {\n";
       for (Nonnull<Declaration*> m : impl_decl.members()) {
-        out << *m;
+        m->PrintIndent(indent_num_spaces + 2, out);
+        out << "\n";
       }
-      out << "}\n";
+      out.indent(indent_num_spaces) << "}";
       break;
     }
     case DeclarationKind::MatchFirstDeclaration: {
       const auto& match_first_decl = cast<MatchFirstDeclaration>(*this);
-      PrintID(out);
-      out << " {\n";
+      out << PrintAsID(match_first_decl) << " {\n";
       for (Nonnull<const ImplDeclaration*> m :
            match_first_decl.impl_declarations()) {
-        out << *m;
+        m->PrintIndent(indent_num_spaces + 2, out);
+        out << "\n";
       }
-      out << "}\n";
+      out.indent(indent_num_spaces) << "}";
       break;
     }
     case DeclarationKind::FunctionDeclaration:
-      cast<FunctionDeclaration>(*this).PrintDepth(-1, out);
+      cast<FunctionDeclaration>(*this).PrintIndent(indent_num_spaces, out);
       break;
     case DeclarationKind::DestructorDeclaration:
-      cast<DestructorDeclaration>(*this).PrintDepth(-1, out);
+      cast<DestructorDeclaration>(*this).PrintIndent(indent_num_spaces, out);
       break;
     case DeclarationKind::ClassDeclaration: {
       const auto& class_decl = cast<ClassDeclaration>(*this);
-      PrintID(out);
+      out << PrintAsID(class_decl);
       if (class_decl.type_params().has_value()) {
         out << **class_decl.type_params();
       }
       out << " {\n";
       for (Nonnull<Declaration*> m : class_decl.members()) {
-        out << *m;
+        m->PrintIndent(indent_num_spaces + 2, out);
+        out << "\n";
       }
-      out << "}\n";
+      out.indent(indent_num_spaces) << "}";
       break;
     }
     case DeclarationKind::MixinDeclaration: {
       const auto& mixin_decl = cast<MixinDeclaration>(*this);
-      PrintID(out);
-      out << "{\n";
+      out << PrintAsID(mixin_decl) << "{\n";
       for (Nonnull<Declaration*> m : mixin_decl.members()) {
-        out << *m;
+        m->PrintIndent(indent_num_spaces + 2, out);
+        out << "\n";
       }
-      out << "}\n";
+      out.indent(indent_num_spaces) << "}";
       break;
     }
     case DeclarationKind::MixDeclaration: {
       const auto& mix_decl = cast<MixDeclaration>(*this);
-      PrintID(out);
+      out << PrintAsID(mix_decl);
       out << mix_decl.mixin() << ";";
       break;
     }
     case DeclarationKind::ChoiceDeclaration: {
       const auto& choice = cast<ChoiceDeclaration>(*this);
-      PrintID(out);
-      out << " {\n";
+      out << PrintAsID(choice) << " {\n";
       for (Nonnull<const AlternativeSignature*> alt : choice.alternatives()) {
-        out << *alt << ";\n";
+        out.indent(indent_num_spaces + 2) << *alt << ";\n";
       }
-      out << "}\n";
+      out.indent(indent_num_spaces) << "}";
       break;
     }
 
     case DeclarationKind::VariableDeclaration: {
       const auto& var = cast<VariableDeclaration>(*this);
-      PrintID(out);
+      out << PrintAsID(var);
       if (var.has_initializer()) {
         out << " = " << var.initializer();
       }
-      out << ";\n";
+      out << ";";
       break;
     }
 
-    case DeclarationKind::InterfaceExtendsDeclaration:
-    case DeclarationKind::InterfaceImplDeclaration:
+    case DeclarationKind::InterfaceExtendDeclaration:
+    case DeclarationKind::InterfaceRequireDeclaration:
     case DeclarationKind::AssociatedConstantDeclaration: {
-      PrintID(out);
-      out << ";\n";
+      out << PrintAsID(*this) << ";";
       break;
     }
 
@@ -123,8 +129,12 @@ void Declaration::Print(llvm::raw_ostream& out) const {
 
     case DeclarationKind::AliasDeclaration: {
       const auto& alias = cast<AliasDeclaration>(*this);
-      PrintID(out);
-      out << " = " << alias.target() << ";\n";
+      out << PrintAsID(alias) << " = " << alias.target() << ";";
+      break;
+    }
+
+    case DeclarationKind::ExtendBaseDeclaration: {
+      out << PrintAsID(*this) << ";";
       break;
     }
   }
@@ -149,9 +159,9 @@ void Declaration::PrintID(llvm::raw_ostream& out) const {
       const auto& impl_decl = cast<ImplDeclaration>(*this);
       switch (impl_decl.kind()) {
         case ImplKind::InternalImpl:
+          out << "extend ";
           break;
         case ImplKind::ExternalImpl:
-          out << "external ";
           break;
       }
       out << "impl ";
@@ -163,7 +173,10 @@ void Declaration::PrintID(llvm::raw_ostream& out) const {
         }
         out << "] ";
       }
-      out << *impl_decl.impl_type() << " as " << impl_decl.interface();
+      if (impl_decl.kind() != ImplKind::InternalImpl) {
+        out << *impl_decl.impl_type() << " ";
+      }
+      out << "as " << impl_decl.interface();
       break;
     }
     case DeclarationKind::MatchFirstDeclaration:
@@ -204,15 +217,15 @@ void Declaration::PrintID(llvm::raw_ostream& out) const {
       break;
     }
 
-    case DeclarationKind::InterfaceExtendsDeclaration: {
-      const auto& extends = cast<InterfaceExtendsDeclaration>(*this);
-      out << "extends " << *extends.base();
+    case DeclarationKind::InterfaceExtendDeclaration: {
+      const auto& extend = cast<InterfaceExtendDeclaration>(*this);
+      out << "extend " << *extend.base();
       break;
     }
 
-    case DeclarationKind::InterfaceImplDeclaration: {
-      const auto& impl = cast<InterfaceImplDeclaration>(*this);
-      out << "impl " << *impl.impl_type() << " as " << *impl.constraint();
+    case DeclarationKind::InterfaceRequireDeclaration: {
+      const auto& impl = cast<InterfaceRequireDeclaration>(*this);
+      out << "require " << *impl.impl_type() << " impls " << *impl.constraint();
       break;
     }
 
@@ -230,6 +243,12 @@ void Declaration::PrintID(llvm::raw_ostream& out) const {
     case DeclarationKind::AliasDeclaration: {
       const auto& alias = cast<AliasDeclaration>(*this);
       out << "alias " << alias.name();
+      break;
+    }
+
+    case DeclarationKind::ExtendBaseDeclaration: {
+      const auto& extend = cast<ExtendBaseDeclaration>(*this);
+      out << "extend base: " << *extend.base_class();
       break;
     }
   }
@@ -268,8 +287,8 @@ auto GetName(const Declaration& declaration)
       return cast<VariableDeclaration>(declaration).binding().name();
     case DeclarationKind::AssociatedConstantDeclaration:
       return cast<AssociatedConstantDeclaration>(declaration).binding().name();
-    case DeclarationKind::InterfaceExtendsDeclaration:
-    case DeclarationKind::InterfaceImplDeclaration:
+    case DeclarationKind::InterfaceExtendDeclaration:
+    case DeclarationKind::InterfaceRequireDeclaration:
     case DeclarationKind::ImplDeclaration:
     case DeclarationKind::MatchFirstDeclaration:
       return std::nullopt;
@@ -277,6 +296,9 @@ auto GetName(const Declaration& declaration)
       return SelfDeclaration::name();
     case DeclarationKind::AliasDeclaration: {
       return cast<AliasDeclaration>(declaration).name().inner_name();
+    }
+    case DeclarationKind::ExtendBaseDeclaration: {
+      return "extend base";
     }
   }
 }
@@ -388,25 +410,31 @@ auto FunctionDeclaration::Create(Nonnull<Arena*> arena,
       virt_override);
 }
 
-void CallableDeclaration::PrintDepth(int depth, llvm::raw_ostream& out) const {
+void CallableDeclaration::PrintIndent(int indent_num_spaces,
+                                      llvm::raw_ostream& out) const {
   auto name = GetName(*this);
   CARBON_CHECK(name) << "Unexpected missing name for `" << *this << "`.";
-  out << "fn " << *name << " ";
-  if (!deduced_parameters_.empty()) {
+  out.indent(indent_num_spaces) << "fn " << *name << " ";
+  if (!deduced_parameters_.empty() || self_pattern_) {
     out << "[";
     llvm::ListSeparator sep;
     for (Nonnull<const GenericBinding*> deduced : deduced_parameters_) {
       out << sep << *deduced;
     }
+    if (self_pattern_) {
+      out << sep << **self_pattern_;
+    }
     out << "]";
   }
-  out << *param_pattern_ << return_term_;
+  out << *param_pattern_;
+  if (!return_term_.is_omitted()) {
+    out << " " << return_term_;
+  }
   if (body_) {
-    out << " {\n";
-    (*body_)->PrintDepth(depth, out);
-    out << "\n}\n";
+    out << "\n";
+    (*body_)->PrintIndent(indent_num_spaces, out);
   } else {
-    out << ";\n";
+    out << ";";
   }
 }
 
@@ -417,9 +445,13 @@ ClassDeclaration::ClassDeclaration(CloneContext& context,
       extensibility_(other.extensibility_),
       self_decl_(context.Clone(other.self_decl_)),
       type_params_(context.Clone(other.type_params_)),
-      base_expr_(context.Clone(other.base_expr_)),
       members_(context.Clone(other.members_)),
       base_type_(context.Clone(other.base_type_)) {}
+
+ExtendBaseDeclaration::ExtendBaseDeclaration(CloneContext& context,
+                                             const ExtendBaseDeclaration& other)
+    : Declaration(context, other),
+      base_class_(context.Clone(other.base_class_)) {}
 
 ConstraintTypeDeclaration::ConstraintTypeDeclaration(
     CloneContext& context, const ConstraintTypeDeclaration& other)

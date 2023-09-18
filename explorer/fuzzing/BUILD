@@ -2,7 +2,8 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-load("//bazel/fuzzing:rules.bzl", "cc_fuzz_test")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_test")
+load("//testing/fuzzing:rules.bzl", "cc_fuzz_test")
 
 cc_library(
     name = "ast_to_proto_lib",
@@ -10,8 +11,8 @@ cc_library(
     srcs = ["ast_to_proto.cpp"],
     hdrs = ["ast_to_proto.h"],
     deps = [
-        "//common/fuzzing:carbon_cc_proto",
         "//explorer/ast",
+        "//testing/fuzzing:carbon_cc_proto",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -24,10 +25,10 @@ cc_binary(
         ":ast_to_proto_lib",
         "//common:bazel_working_dir",
         "//common:error",
-        "//common/fuzzing:carbon_cc_proto",
         "//explorer/ast",
-        "//explorer/common:arena",
+        "//explorer/base:arena",
         "//explorer/syntax",
+        "//testing/fuzzing:carbon_cc_proto",
         "@com_google_protobuf//:protobuf_headers",
     ],
 )
@@ -37,17 +38,18 @@ cc_test(
     srcs = ["ast_to_proto_test.cpp"],
     args = [
         "$(locations //explorer:standard_libraries)",
-        "$(locations //explorer/testdata:carbon_files)",
+        "$(locations //explorer:carbon_files)",
     ],
     data = [
+        "//explorer:carbon_files",
         "//explorer:standard_libraries",
-        "//explorer/testdata:carbon_files",
     ],
     deps = [
         ":ast_to_proto_lib",
-        "//common/fuzzing:carbon_cc_proto",
-        "//common/fuzzing:proto_to_carbon_lib",
         "//explorer/syntax",
+        "//testing/base:test_raw_ostream",
+        "//testing/fuzzing:carbon_cc_proto",
+        "//testing/fuzzing:proto_to_carbon_lib",
         "@com_google_googletest//:gtest",
         "@com_google_protobuf//:protobuf_headers",
     ],
@@ -61,10 +63,10 @@ cc_library(
     deps = [
         "//common:check",
         "//common:error",
-        "//common/fuzzing:carbon_cc_proto",
-        "//common/fuzzing:proto_to_carbon_lib",
         "//explorer/ast",
         "//explorer/parse_and_execute",
+        "//testing/fuzzing:carbon_cc_proto",
+        "//testing/fuzzing:proto_to_carbon_lib",
         "@bazel_tools//tools/cpp/runfiles",
         "@com_google_protobuf//:protobuf_headers",
         "@llvm-project//llvm:Support",
@@ -79,8 +81,8 @@ cc_test(
     ],
     deps = [
         ":fuzzer_util",
-        "//common:gtest_main",
-        "//common/fuzzing:proto_to_carbon_lib",
+        "//testing/base:gtest_main",
+        "//testing/fuzzing:proto_to_carbon_lib",
         "@com_google_googletest//:gtest",
         "@com_google_protobuf//:protobuf_headers",
         "@llvm-project//llvm:Support",
@@ -89,10 +91,11 @@ cc_test(
 
 cc_fuzz_test(
     name = "explorer_fuzzer",
-    testonly = 1,
+    size = "small",
     srcs = ["explorer_fuzzer.cpp"],
     corpus = glob(["fuzzer_corpus/*"]),
     shard_count = 8,
+    tags = ["proto-fuzzer"],
     deps = [
         ":fuzzer_util",
         "//common:error",

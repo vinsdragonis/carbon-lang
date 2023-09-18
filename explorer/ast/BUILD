@@ -2,6 +2,8 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+load("@rules_cc//cc:defs.bzl", "cc_library", "cc_test")
+
 package(default_visibility = ["//explorer:__subpackages__"])
 
 cc_library(
@@ -51,10 +53,12 @@ cc_library(
         "//common:error",
         "//common:indirect_value",
         "//common:ostream",
-        "//explorer/common:arena",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
-        "//explorer/common:source_location",
+        "//explorer/base:arena",
+        "//explorer/base:decompose",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:print_as_id",
+        "//explorer/base:source_location",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -80,8 +84,8 @@ cc_test(
     deps = [
         ":ast",
         ":ast_test_matchers",
-        "//common:gtest_main",
-        "//explorer/common:arena",
+        "//explorer/base:arena",
+        "//testing/base:gtest_main",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -92,8 +96,8 @@ cc_test(
     deps = [
         ":ast",
         ":paren_contents",
-        "//common:gtest_main",
-        "//explorer/common:arena",
+        "//explorer/base:arena",
+        "//testing/base:gtest_main",
         "@com_google_googletest//:gtest",
         "@llvm-project//llvm:Support",
     ],
@@ -108,8 +112,8 @@ cc_library(
     name = "paren_contents",
     hdrs = ["paren_contents.h"],
     deps = [
-        "//explorer/common:error_builders",
-        "//explorer/common:source_location",
+        "//explorer/base:error_builders",
+        "//explorer/base:source_location",
     ],
 )
 
@@ -119,8 +123,8 @@ cc_test(
     deps = [
         ":ast",
         ":paren_contents",
-        "//common:gtest_main",
-        "//explorer/common:arena",
+        "//explorer/base:arena",
+        "//testing/base:gtest_main",
         "@com_google_googletest//:gtest",
         "@llvm-project//llvm:Support",
     ],
@@ -132,8 +136,8 @@ cc_test(
     deps = [
         ":ast",
         ":paren_contents",
-        "//common:gtest_main",
-        "//explorer/common:arena",
+        "//explorer/base:arena",
+        "//testing/base:gtest_main",
         "@com_google_googletest//:gtest",
         "@llvm-project//llvm:Support",
     ],
@@ -147,9 +151,12 @@ cc_library(
         ":ast",
         "//common:check",
         "//common:error",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
-        "//explorer/common:source_location",
+        "//common:ostream",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:print_as_id",
+        "//explorer/base:source_location",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -157,4 +164,5 @@ cc_library(
 cc_library(
     name = "expression_category",
     hdrs = ["expression_category.h"],
+    deps = ["@llvm-project//llvm:Support"],
 )

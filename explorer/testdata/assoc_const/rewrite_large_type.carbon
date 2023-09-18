@@ -3,9 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // This doesn't check trace output because it's too slow with it.
-// NOAUTOUPDATE
-// RUN: %{explorer-run}
-// CHECK:STDOUT: result: 1
+// AUTOUPDATE
 
 package ExplorerTest api;
 
@@ -73,7 +71,7 @@ fn DoFirst(
 }
 
 class C {
-  impl as ManyTypes where
+  extend impl as ManyTypes where
       .T3 = (.T4, .T4, .T4) and
       .T1 = (.T2, .T2, .T2) and
       .T4 = (.T5, .T5, .T5) and
@@ -87,3 +85,5 @@ class C {
 fn Main() -> i32 {
   return DoFirst(C, DoSplat(C, 1));
 }
+
+// CHECK:STDOUT: result: 1

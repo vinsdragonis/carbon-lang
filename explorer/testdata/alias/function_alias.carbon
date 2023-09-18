@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 7
 
 package ExplorerTest api;
 
@@ -20,3 +17,5 @@ alias GenericFunctionAlias = GenericFunction;
 fn Main() -> i32 {
   return FunctionAlias(1, 2) + GenericFunctionAlias(4);
 }
+
+// CHECK:STDOUT: result: 7

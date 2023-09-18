@@ -5,9 +5,6 @@
 // TODO: This SHOULD fail but doesn't presently.
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -16,3 +13,5 @@ import ExplorerTest library "Nonexistent";
 fn Main() -> i32 {
   return 0;
 }
+
+// CHECK:STDOUT: result: 0

@@ -7,23 +7,8 @@ name: test
 on:
   push:
     branches: [trunk]
-    paths:
-      # Conservatively run the tests. However, skip them if the only paths in
-      # the pull request match files that we know don't impact the build.
-      - '**'
-      - '!**/*.md'
-      - '!LICENSE'
-      - '!CODEOWNERS'
-      - '!.git*'
   pull_request_target:
-    paths:
-      # Conservatively run the tests. However, skip them if the only paths in
-      # the pull request match files that we know don't impact the build.
-      - '**'
-      - '!**/*.md'
-      - '!LICENSE'
-      - '!CODEOWNERS'
-      - '!.git*'
+  merge_group:
 
 # Cancel previous workflows on the PR when there are multiple fast commits.
 # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#concurrency
@@ -41,7 +26,24 @@ jobs:
         os: [ubuntu-22.04, macos-12]
         build_mode: [fastbuild, opt]
     runs-on: ${{ matrix.os }}
+
     steps:
+      # Ubuntu images start with 23GB available, and this adds 14GB more. For
+      # comparison, MacOS images have >100GB free.
+      - name: Free up disk space (Ubuntu)
+        if: matrix.os == 'ubuntu-22.04'
+        uses: jlumbroso/free-disk-space@v1.2.0
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          # Although we could delete more, if we run into a limit, it provides a
+          # little flexibility to get space while trying to shrink the build.
+          # There's also support for docker images at head (1.2.0 is still
+          # the latest release).
+          large-packages: false
+          swap-storage: false
+
       # Checkout the pull request head or the branch.
       - name: Checkout pull request
         if: github.event_name == 'pull_request_target'
@@ -53,8 +55,22 @@ jobs:
         if: github.event_name != 'pull_request_target'
         uses: actions/checkout@v3
 
+      # Tests should only run on applicable paths, but we still need to have an
+      # action run for the merge queue. We filter steps based on the paths here,
+      # and condition steps on the output.
+      - id: filter
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            ignore:
+              - '**/*.md'
+              - 'LICENSE'
+              - 'CODEOWNERS'
+              - '.git*'
+
       # Setup Python and related tools.
       - uses: actions/setup-python@v4
+        if: steps.filter.outputs.ignore == 'false'
         with:
           # Match the min version listed in docs/project/contribution_tools.md
           python-version: '3.9'
@@ -63,7 +79,7 @@ jobs:
       # https://github.com/actions/runner-images/blob/main/images/macos/macos-12-Readme.md
       # Both 14 and 15 are candidates because GitHub is testing new images.
       - name: Setup LLVM and Clang (macOS)
-        if: matrix.os == 'macos-12'
+        if: steps.filter.outputs.ignore == 'false' && matrix.os == 'macos-12'
         run: |
           LLVM_PATH="$(brew --prefix llvm@15)"
           if [[ ! -e "${LLVM_PATH}" ]]; then
@@ -80,13 +96,16 @@ jobs:
       # https://github.com/actions/runner-images/blob/main/images/linux/Ubuntu2204-Readme.md
       # Both 14 and 15 are candidates for forwards compatibility, although 15
       # isn't provided.
-      - name: Setup LLVM and Clang (Linux)
-        if: matrix.os == 'ubuntu-22.04'
+      - name: Setup LLVM and Clang (Ubuntu)
+        if:
+          steps.filter.outputs.ignore == 'false' && matrix.os == 'ubuntu-22.04'
         run: |
-          LLVM_PATH="/usr/lib/llvm-15"
-          if [[ ! -e "${LLVM_PATH}" ]]; then
-            LLVM_PATH="/usr/lib/llvm-14"
-          fi
+          # TODO: Re-enable once llvm-15 is working.
+          # https://github.com/actions/runner-images/issues/8253
+          # LLVM_PATH="/usr/lib/llvm-15"
+          # if [[ ! -e "${LLVM_PATH}" ]]; then
+          LLVM_PATH="/usr/lib/llvm-14"
+          # fi
           echo "Using ${LLVM_PATH}"
           echo "${LLVM_PATH}/bin" >> $GITHUB_PATH
           echo '*** ls "${LLVM_PATH}"'
@@ -96,6 +115,7 @@ jobs:
 
       # Print the various tool paths and versions to help in debugging.
       - name: Print tool debugging info
+        if: steps.filter.outputs.ignore == 'false'
         run: |
           echo '*** PATH'
           echo $PATH
@@ -114,6 +134,7 @@ jobs:
 
       # Extract our access key for our build cache.
       - name: Extract access key
+        if: steps.filter.outputs.ignore == 'false'
         env:
           GCP_BUILDS_SERVICE_ACCOUNT: ${{ secrets.GCP_BUILDS_SERVICE_ACCOUNT }}
         run: |
@@ -122,25 +143,50 @@ jobs:
 
       # We need to replace the `.` with a `_` for the build cache.
       - name: Setup LLVM and Clang (macOS)
-        if: matrix.os == 'macos-12'
+        if: steps.filter.outputs.ignore == 'false' && matrix.os == 'macos-12'
         run: |
           echo "os_for_cache=macos-12" >> $GITHUB_ENV
-      - name: Setup LLVM and Clang (Linux)
-        if: matrix.os == 'ubuntu-22.04'
+      - name: Setup LLVM and Clang (Ubuntu)
+        if:
+          steps.filter.outputs.ignore == 'false' && matrix.os == 'ubuntu-22.04'
         run: |
           echo "os_for_cache=ubuntu-22_04" >> $GITHUB_ENV
 
       # Add our bazel configuration and print basic info to ease debugging.
       - name: Configure Bazel and print info
+        if: steps.filter.outputs.ignore == 'false'
         env:
           # Add a cache version for changes that bazel won't otherwise detect,
           # like llvm version changes.
           CACHE_VERSION: 1
         run: |
           cat >user.bazelrc <<EOF
-          # Enable remote cache for our CI.
+          # Enable remote cache for our CI but minimize downloads.
           build --remote_cache=https://storage.googleapis.com/carbon-builds-github-v${CACHE_VERSION}-${{ env.os_for_cache }}
           build --google_credentials=$HOME/gcp-builds-service-account.json
+          build --remote_download_minimal
+
+          # Set an artificially high jobs count. This flag controls the number
+          # of concurrency Bazel itself uses, which is essential for actions
+          # that are internally blocked on for example downloading results form
+          # the cache above. Without setting this high, Bazel will pick a small
+          # number based on the available host CPUs and the reality will be a
+          # long chain of largely serialized download events with little or no
+          # usage of the host machine. Fortunately, local actions are
+          # *separately* gated on '--local_*_resources' that will avoid a large
+          # jobs value overwhelming the host. There is a bug to make downloads
+          # behave completely asynchronously and remove the need for this filed
+          # back in 2018 but work seemed to not finish:
+          # https://github.com/bazelbuild/bazel/issues/6394
+          #
+          # There is a new effort (yay!) but until then it seems worth using the
+          # workaround of a high jobs value. The biggest downside (increased
+          # heap usage) seems like it isn't currently a big loss for our builds.
+          #
+          # Higher values like 50 have led to CI failures with network errors
+          # and IOExceptions, see
+          # https://discord.com/channels/655572317891461132/707150492370862090/1151605725576056934
+          build --jobs=32
 
           # General build options.
           build --verbose_failures
@@ -148,18 +194,64 @@ jobs:
           EOF
           bazelisk info
 
-      # Build all targets first to isolate build failures.
-      - name: Build (${{ matrix.build_mode }})
-        env:
-          # 'libtool_check_unique failed to generate' workaround.
-          # https://github.com/bazelbuild/bazel/issues/14113#issuecomment-999794586
-          BAZEL_USE_CPP_ONLY_TOOLCHAIN: 1
-        run: bazelisk build -c ${{ matrix.build_mode }} //...:all
+      # Just for visibility, print space before and after the build.
+      - name: Disk space before build
+        if: steps.filter.outputs.ignore == 'false'
+        run: df -h
 
-      # Run all test targets.
+      # Build and run all targets on branch pushes to ensure we always have a
+      # clean tree. We don't expect this to be an interactive path and so don't
+      # optimize the latency of this step.
       - name: Test (${{ matrix.build_mode }})
+        if:
+          steps.filter.outputs.ignore == 'false' && github.event_name == 'push'
         env:
           # 'libtool_check_unique failed to generate' workaround.
           # https://github.com/bazelbuild/bazel/issues/14113#issuecomment-999794586
           BAZEL_USE_CPP_ONLY_TOOLCHAIN: 1
-        run: bazelisk test -c ${{ matrix.build_mode }} //...:all
+        run: |
+          bazelisk test -c ${{ matrix.build_mode }} //...
+
+      # Compute the set of possible rules impacted by this change using
+      # Bazel-based diffing. This lets PRs and the merge queue have a much more
+      # efficient test CI action by avoiding even enumerating (and downloading)
+      # all of the unaffected Bazel targets.
+      - name: Compute impacted pull request targets
+        if:
+          steps.filter.outputs.ignore == 'false' && github.event_name != 'push'
+        env:
+          # Compute the base SHA from the different event structures.
+          GIT_BASE_SHA:
+            ${{ github.event_name == 'pull_request_target' &&
+            github.event.pull_request.base.sha ||
+            github.event.merge_group.base_sha }}
+          TARGETS_FILE: ${{ runner.temp }}/targets
+        run: |
+          # First fetch the relevant base into the git repository.
+          git fetch --depth=1 origin $GIT_BASE_SHA
+
+          # Then use `target-determinator` as wrapped by our script.
+          ./scripts/target_determinator.py $GIT_BASE_SHA >$TARGETS_FILE
+
+      # Build and run just the tests impacted by the PR or merge group.
+      - name: Test (${{ matrix.build_mode }})
+        if:
+          steps.filter.outputs.ignore == 'false' && github.event_name != 'push'
+        env:
+          # 'libtool_check_unique failed to generate' workaround.
+          # https://github.com/bazelbuild/bazel/issues/14113#issuecomment-999794586
+          BAZEL_USE_CPP_ONLY_TOOLCHAIN: 1
+          TARGETS_FILE: ${{ runner.temp }}/targets
+        run: |
+          # Bazel requires a test target to run the test command. There may be
+          # no targets or there may only be non-test targets that we want to
+          # build, so simply inject an explicit no-op test target.
+          echo "//scripts:no_op_test" >> $TARGETS_FILE
+
+          bazelisk test -c ${{ matrix.build_mode }} \
+            --target_pattern_file=$TARGETS_FILE
+
+      # See "Disk space before build".
+      - name: Disk space after build
+        if: steps.filter.outputs.ignore == 'false'
+        run: df -h

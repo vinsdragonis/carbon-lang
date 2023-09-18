@@ -5,12 +5,13 @@
 #ifndef CARBON_TOOLCHAIN_SOURCE_SOURCE_BUFFER_H_
 #define CARBON_TOOLCHAIN_SOURCE_SOURCE_BUFFER_H_
 
+#include <memory>
 #include <string>
-#include <utility>
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Twine.h"
-#include "llvm/Support/Error.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/VirtualFileSystem.h"
+#include "toolchain/diagnostics/diagnostic_emitter.h"
 
 namespace Carbon {
 
@@ -33,43 +34,29 @@ namespace Carbon {
 // some implementation complexity in the future if needed.
 class SourceBuffer {
  public:
-  static auto CreateFromText(llvm::Twine text,
-                             llvm::StringRef filename = "/text")
-      -> llvm::Expected<SourceBuffer>;
-  static auto CreateFromFile(llvm::StringRef filename)
-      -> llvm::Expected<SourceBuffer>;
+  // Opens the requested file. Returns a SourceBuffer on success. Prints an
+  // error and returns nullopt on failure.
+  static auto CreateFromFile(llvm::vfs::FileSystem& fs,
+                             llvm::StringRef filename,
+                             DiagnosticConsumer& consumer)
+      -> std::optional<SourceBuffer>;
 
   // Use one of the factory functions above to create a source buffer.
   SourceBuffer() = delete;
 
-  // Cannot copy as there may be non-trivial owned file data; see the class
-  // comment for details.
-  SourceBuffer(const SourceBuffer& arg) = delete;
-
-  SourceBuffer(SourceBuffer&& arg) noexcept;
-
-  ~SourceBuffer();
-
   [[nodiscard]] auto filename() const -> llvm::StringRef { return filename_; }
 
-  [[nodiscard]] auto text() const -> llvm::StringRef { return text_; }
+  [[nodiscard]] auto text() const -> llvm::StringRef {
+    return text_->getBuffer();
+  }
 
  private:
-  enum class ContentMode {
-    Uninitialized,
-    MMapped,
-    Owned,
-  };
+  explicit SourceBuffer(std::string filename,
+                        std::unique_ptr<llvm::MemoryBuffer> text)
+      : filename_(std::move(filename)), text_(std::move(text)) {}
 
-  // Constructor for mmapped content.
-  explicit SourceBuffer(std::string filename, llvm::StringRef text);
-  // Constructor for owned content.
-  explicit SourceBuffer(std::string filename, std::string text);
-
-  ContentMode content_mode_;
   std::string filename_;
-  std::string text_storage_;
-  llvm::StringRef text_;
+  std::unique_ptr<llvm::MemoryBuffer> text_;
 };
 
 }  // namespace Carbon

@@ -3,11 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: 2
-// CHECK:STDOUT: 1
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -16,7 +11,7 @@ interface Number {
   fn Add[self: Self](other: Self) -> Self;
 }
 
-external impl i32 as Number {
+impl i32 as Number {
   fn Zero() -> i32 { return 0; }
   fn Add[self: i32](other: i32) -> i32 { return self + other; }
 }
@@ -25,7 +20,8 @@ base class A(T:! Number) {
   var value_a: T;
 }
 
-class B extends A(i32) {
+class B {
+  extend base: A(i32);
   var value_b: i32;
 }
 
@@ -35,3 +31,7 @@ fn Main() -> i32 {
   Print("{0}", b.value_a);
   return 0;
 }
+
+// CHECK:STDOUT: 2
+// CHECK:STDOUT: 1
+// CHECK:STDOUT: result: 0

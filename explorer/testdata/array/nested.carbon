@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
@@ -13,3 +10,5 @@ fn Main() -> i32 {
   var x: [[i32; 3]; 2] = ((0, 1, 2), (3, 4, 5));
   return x[1][2] - 5;
 }
+
+// CHECK:STDOUT: result: 0

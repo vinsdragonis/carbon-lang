@@ -5,20 +5,11 @@
 #ifndef CARBON_EXPLORER_INTERPRETER_INTERPRETER_H_
 #define CARBON_EXPLORER_INTERPRETER_INTERPRETER_H_
 
-#include <optional>
-#include <utility>
-#include <vector>
-
 #include "common/ostream.h"
 #include "explorer/ast/ast.h"
-#include "explorer/ast/declaration.h"
 #include "explorer/ast/expression.h"
-#include "explorer/ast/pattern.h"
 #include "explorer/ast/value.h"
-#include "explorer/common/trace_stream.h"
-#include "explorer/interpreter/action.h"
-#include "explorer/interpreter/heap.h"
-#include "llvm/ADT/ArrayRef.h"
+#include "explorer/base/trace_stream.h"
 
 namespace Carbon {
 
@@ -35,20 +26,6 @@ auto InterpExp(Nonnull<const Expression*> e, Nonnull<Arena*> arena,
                Nonnull<TraceStream*> trace_stream,
                Nonnull<llvm::raw_ostream*> print_stream)
     -> ErrorOr<Nonnull<const Value*>>;
-
-// Attempts to match `v` against the pattern `p`, returning whether matching
-// is successful. If it is, populates **bindings with the variables bound by
-// the match; `bindings` should only be nullopt in contexts where `p`
-// is not permitted to bind variables. **bindings may be modified even if the
-// match is unsuccessful, so it should typically be created for the
-// PatternMatch call and then merged into an existing scope on success.
-// The matches for generic variables in the pattern are output in
-// `generic_args`.
-// TODO: consider moving this to a separate header.
-[[nodiscard]] auto PatternMatch(
-    Nonnull<const Value*> p, Nonnull<const Value*> v, SourceLocation source_loc,
-    std::optional<Nonnull<RuntimeScope*>> bindings, BindingMap& generic_args,
-    Nonnull<TraceStream*> trace_stream, Nonnull<Arena*> arena) -> bool;
 
 }  // namespace Carbon
 

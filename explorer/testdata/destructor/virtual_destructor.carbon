@@ -3,40 +3,31 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: Allocate C
-// CHECK:STDOUT: DESTRUCTOR C
-// CHECK:STDOUT: DESTRUCTOR B
-// CHECK:STDOUT: DESTRUCTOR A
-// CHECK:STDOUT: Delete C from A*
-// CHECK:STDOUT: DESTRUCTOR C
-// CHECK:STDOUT: DESTRUCTOR B
-// CHECK:STDOUT: DESTRUCTOR A
-// CHECK:STDOUT: result: 0
 
 package ExplorerTest api;
 
 
 base class A {
-    virtual destructor[self: Self] {
-        Print("DESTRUCTOR A");
-    }
+  virtual destructor[self: Self] {
+    Print("DESTRUCTOR A");
+  }
 }
 
-base class B extends A {
-    impl destructor[self: Self] {
-        Print("DESTRUCTOR B");
-    }
+base class B {
+  extend base: A;
+  impl destructor[self: Self] {
+    Print("DESTRUCTOR B");
+  }
 }
 
-class C extends B {
-    fn Create() -> Self{
-        return {.base={.base={}}};
-    }
-    impl destructor[self: Self] {
-        Print("DESTRUCTOR C");
-    }
+class C {
+  extend base: B;
+  fn Create() -> Self{
+    return {.base={.base={}}};
+  }
+  impl destructor[self: Self] {
+    Print("DESTRUCTOR C");
+  }
 }
 
 fn Main() -> i32 {
@@ -49,3 +40,13 @@ fn Main() -> i32 {
 
   return 0;
 }
+
+// CHECK:STDOUT: Allocate C
+// CHECK:STDOUT: DESTRUCTOR C
+// CHECK:STDOUT: DESTRUCTOR B
+// CHECK:STDOUT: DESTRUCTOR A
+// CHECK:STDOUT: Delete C from A*
+// CHECK:STDOUT: DESTRUCTOR C
+// CHECK:STDOUT: DESTRUCTOR B
+// CHECK:STDOUT: DESTRUCTOR A
+// CHECK:STDOUT: result: 0

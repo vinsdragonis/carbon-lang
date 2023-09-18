@@ -8,9 +8,11 @@
 #include <map>
 #include <utility>
 
+#include "common/ostream.h"
 #include "explorer/ast/clone_context.h"
-#include "explorer/common/nonnull.h"
+#include "explorer/base/nonnull.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringExtras.h"
 
 namespace Carbon {
 
@@ -29,7 +31,7 @@ using ImplWitnessMap =
 // These are shared by a context and all unparameterized entities within that
 // context. For example, a class and the name of a method within that class
 // will have the same set of bindings.
-class Bindings {
+class Bindings : public Printable<Bindings> {
  public:
   // Gets an empty set of bindings.
   static auto None() -> Nonnull<const Bindings*>;
@@ -62,6 +64,8 @@ class Bindings {
   auto Decompose(F f) const {
     return f(args_, witnesses_);
   }
+
+  void Print(llvm::raw_ostream& out) const;
 
   // Add a value, and perhaps a witness, for a generic binding.
   void Add(Nonnull<const GenericBinding*> binding, Nonnull<const Value*> value,

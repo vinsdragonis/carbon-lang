@@ -2,6 +2,8 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
 package(default_visibility = ["//explorer/parse_and_execute:__pkg__"])
 
 cc_library(
@@ -20,9 +22,11 @@ cc_library(
         "//common:error",
         "//common:ostream",
         "//explorer/ast",
-        "//explorer/common:arena",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
+        "//explorer/base:arena",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:print_as_id",
+        "//explorer/base:source_location",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -42,6 +46,7 @@ cc_library(
         "//common:error",
         "//common:ostream",
         "//explorer/ast",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -49,7 +54,7 @@ cc_library(
 cc_library(
     name = "dictionary",
     hdrs = ["dictionary.h"],
-    deps = ["//explorer/common:arena"],
+    deps = ["//explorer/base:arena"],
 )
 
 cc_library(
@@ -63,10 +68,11 @@ cc_library(
         ":resolve_unformed",
         ":type_checker",
         "//common:check",
+        "//common:error",
         "//common:ostream",
         "//explorer/ast",
-        "//explorer/common:arena",
-        "//explorer/common:trace_stream",
+        "//explorer/base:arena",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -78,11 +84,14 @@ cc_library(
     deps = [
         ":action",
         ":heap_allocation_interface",
+        "//common:check",
+        "//common:error",
         "//common:ostream",
         "//explorer/ast",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
-        "//explorer/common:source_location",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:source_location",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -91,9 +100,11 @@ cc_library(
     name = "heap_allocation_interface",
     hdrs = ["heap_allocation_interface.h"],
     deps = [
+        "//common:error",
         "//explorer/ast",
-        "//explorer/common:arena",
-        "//explorer/common:nonnull",
+        "//explorer/base:arena",
+        "//explorer/base:nonnull",
+        "//explorer/base:source_location",
     ],
 )
 
@@ -109,15 +120,19 @@ cc_library(
         ":action",
         ":action_stack",
         ":heap",
+        ":pattern_match",
         ":stack",
+        ":type_utils",
         "//common:check",
         "//common:error",
         "//common:ostream",
         "//explorer/ast",
-        "//explorer/common:arena",
-        "//explorer/common:error_builders",
-        "//explorer/common:source_location",
-        "//explorer/common:trace_stream",
+        "//explorer/ast:expression_category",
+        "//explorer/base:arena",
+        "//explorer/base:error_builders",
+        "//explorer/base:print_as_id",
+        "//explorer/base:source_location",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -129,8 +144,10 @@ cc_library(
     deps = [
         "//common:check",
         "//explorer/ast",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:print_as_id",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -140,10 +157,13 @@ cc_library(
     srcs = ["resolve_names.cpp"],
     hdrs = ["resolve_names.h"],
     deps = [
+        ":stack_space",
         "//common:check",
         "//explorer/ast",
         "//explorer/ast:static_scope",
-        "//explorer/common:arena",
+        "//explorer/base:arena",
+        "//explorer/base:print_as_id",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -166,7 +186,7 @@ cc_library(
         ":action",
         "//common:error",
         "//explorer/ast",
-        "//explorer/common:nonnull",
+        "//explorer/base:nonnull",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -193,17 +213,21 @@ cc_library(
         ":dictionary",
         ":interpreter",
         ":pattern_analysis",
+        ":pattern_match",
+        ":stack_space",
         ":type_structure",
+        ":type_utils",
         "//common:check",
         "//common:enum_base",
         "//common:error",
         "//common:ostream",
         "//explorer/ast",
-        "//explorer/common:arena",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
-        "//explorer/common:source_location",
-        "//explorer/common:trace_stream",
+        "//explorer/base:arena",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:print_as_id",
+        "//explorer/base:source_location",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -217,11 +241,25 @@ cc_library(
         "resolve_unformed.h",
     ],
     deps = [
+        ":stack_space",
         "//common:check",
         "//explorer/ast",
         "//explorer/ast:static_scope",
-        "//explorer/common:error_builders",
-        "//explorer/common:nonnull",
+        "//explorer/base:error_builders",
+        "//explorer/base:nonnull",
+        "//explorer/base:print_as_id",
+        "//explorer/base:trace_stream",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_library(
+    name = "stack_space",
+    srcs = ["stack_space.cpp"],
+    hdrs = ["stack_space.h"],
+    deps = [
+        "//common:check",
+        "//common:error",
         "@llvm-project//llvm:Support",
     ],
 )
@@ -237,7 +275,42 @@ cc_library(
     deps = [
         "//common:ostream",
         "//explorer/ast",
-        "//explorer/common:nonnull",
+        "//explorer/ast:expression_category",
+        "//explorer/base:nonnull",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_library(
+    name = "type_utils",
+    srcs = [
+        "type_utils.cpp",
+    ],
+    hdrs = [
+        "type_utils.h",
+    ],
+    deps = [
+        "//explorer/ast",
+        "//explorer/base:nonnull",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+cc_library(
+    name = "pattern_match",
+    srcs = [
+        "pattern_match.cpp",
+    ],
+    hdrs = [
+        "pattern_match.h",
+    ],
+    deps = [
+        ":action",
+        "//explorer/ast",
+        "//explorer/base:arena",
+        "//explorer/base:nonnull",
+        "//explorer/base:source_location",
+        "//explorer/base:trace_stream",
         "@llvm-project//llvm:Support",
     ],
 )

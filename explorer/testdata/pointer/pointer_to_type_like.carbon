@@ -3,15 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 1
 
 package ExplorerTest api;
 
 class TypeLike {
   var v: type;
-  impl as ImplicitAs(type) {
+  extend impl as ImplicitAs(type) {
     fn Convert[self: Self]() -> type { return i32; }
   }
 }
@@ -23,3 +20,5 @@ fn Main() -> i32 {
   var p: Almosti32()* = &a;
   return *p;
 }
+
+// CHECK:STDOUT: result: 1

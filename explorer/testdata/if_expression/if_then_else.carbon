@@ -3,9 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
-// RUN: %{explorer-run}
-// RUN: %{explorer-run-trace}
-// CHECK:STDOUT: result: 12
 
 package ExplorerTest api;
 
@@ -17,3 +14,5 @@ fn Main() -> i32 {
          then if not cond then 1 + 2 else 3 * 4
          else if not cond then 5 + 6 else 7 * 8;
 }
+
+// CHECK:STDOUT: result: 12

@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "common/check.h"
 #include "common/ostream.h"
 #include "explorer/ast/ast_node.h"
 #include "explorer/ast/ast_rtti.h"
@@ -16,7 +17,7 @@
 #include "explorer/ast/expression.h"
 #include "explorer/ast/expression_category.h"
 #include "explorer/ast/value_node.h"
-#include "explorer/common/source_location.h"
+#include "explorer/base/source_location.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 
@@ -106,8 +107,8 @@ class Pattern : public AstNode {
 };
 
 // Call the given `visitor` on all patterns nested within the given pattern,
-// including `pattern` itself. Aborts and returns `false` if `visitor` returns
-// `false`, otherwise returns `true`.
+// including `pattern` itself, in a preorder traversal. Aborts and returns
+// `false` if `visitor` returns `false`, otherwise returns `true`.
 auto VisitNestedPatterns(const Pattern& pattern,
                          llvm::function_ref<bool(const Pattern&)> visitor)
     -> bool;
@@ -299,7 +300,10 @@ class GenericBinding : public Pattern {
 
   // The index of this binding, which is the number of bindings that are in
   // scope at the point where this binding is declared.
-  auto index() const -> int { return *index_; }
+  auto index() const -> int {
+    CARBON_CHECK(index_);
+    return *index_;
+  }
 
   // Set the index of this binding. Should be called only during type-checking.
   void set_index(int index) {
