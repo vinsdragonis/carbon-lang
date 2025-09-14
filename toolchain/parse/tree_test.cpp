@@ -8,108 +8,155 @@
 #include <gtest/gtest.h>
 
 #include <forward_list>
+#include <optional>
+#include <string>
 
-#include "testing/base/test_raw_ostream.h"
+#include "common/raw_string_ostream.h"
+#include "toolchain/base/shared_value_stores.h"
 #include "toolchain/diagnostics/diagnostic_emitter.h"
 #include "toolchain/diagnostics/mocks.h"
+#include "toolchain/lex/lex.h"
 #include "toolchain/lex/tokenized_buffer.h"
+#include "toolchain/parse/parse.h"
+#include "toolchain/parse/tree_and_subtrees.h"
+#include "toolchain/testing/compile_helper.h"
 #include "toolchain/testing/yaml_test_helpers.h"
 
 namespace Carbon::Parse {
 namespace {
 
-using ::Carbon::Testing::TestRawOstream;
 using ::testing::ElementsAre;
 using ::testing::Pair;
 
 namespace Yaml = ::Carbon::Testing::Yaml;
 
 class TreeTest : public ::testing::Test {
- protected:
-  auto GetSourceBuffer(llvm::StringRef t) -> SourceBuffer& {
-    CARBON_CHECK(fs.addFile("test.carbon", /*ModificationTime=*/0,
-                            llvm::MemoryBuffer::getMemBuffer(t)));
-    source_storage.push_front(
-        std::move(*SourceBuffer::CreateFromFile(fs, "test.carbon", consumer)));
-    return source_storage.front();
-  }
-
-  auto GetTokenizedBuffer(llvm::StringRef t) -> Lex::TokenizedBuffer& {
-    token_storage.push_front(
-        Lex::TokenizedBuffer::Lex(GetSourceBuffer(t), consumer));
-    return token_storage.front();
-  }
-
-  llvm::vfs::InMemoryFileSystem fs;
-  std::forward_list<SourceBuffer> source_storage;
-  std::forward_list<Lex::TokenizedBuffer> token_storage;
-  DiagnosticConsumer& consumer = ConsoleDiagnosticConsumer();
+ public:
+  Testing::CompileHelper compile_helper_;
 };
 
 TEST_F(TreeTest, IsValid) {
-  Lex::TokenizedBuffer tokens = GetTokenizedBuffer("");
-  Tree tree = Tree::Parse(tokens, consumer, /*vlog_stream=*/nullptr);
-  EXPECT_TRUE((*tree.postorder().begin()).is_valid());
+  Tree& tree = compile_helper_.GetTree("");
+  EXPECT_TRUE((*tree.postorder().begin()).has_value());
 }
 
-TEST_F(TreeTest, PrintPostorderAsYAML) {
-  Lex::TokenizedBuffer tokens = GetTokenizedBuffer("fn F();");
-  Tree tree = Tree::Parse(tokens, consumer, /*vlog_stream=*/nullptr);
-  EXPECT_FALSE(tree.has_errors());
-  TestRawOstream print_stream;
-  tree.Print(print_stream);
+TEST_F(TreeTest, NullStringRef) {
+  Tree& tree = compile_helper_.GetTree(llvm::StringRef());
+  EXPECT_TRUE((*tree.postorder().begin()).has_value());
+}
+
+TEST_F(TreeTest, AsAndTryAs) {
+  auto [tokens, tree_and_subtrees] =
+      compile_helper_.GetTokenizedBufferWithTreeAndSubtrees("fn F();");
+  const auto& tree = tree_and_subtrees.tree();
+  ASSERT_FALSE(tree.has_errors());
+  auto it = tree_and_subtrees.roots().begin();
+  // A FileEnd node, so won't match.
+  NodeId n = *it;
+
+  // NodeIdForKind
+  std::optional<FunctionDeclId> fn_decl_id = tree.TryAs<FunctionDeclId>(n);
+  EXPECT_FALSE(fn_decl_id.has_value());
+  // NodeIdOneOf
+  std::optional<AnyFunctionDeclId> any_fn_decl_id =
+      tree.TryAs<AnyFunctionDeclId>(n);
+  EXPECT_FALSE(any_fn_decl_id.has_value());
+  // NodeIdInCategory
+  std::optional<AnyDeclId> any_decl_id = tree.TryAs<AnyDeclId>(n);
+  EXPECT_FALSE(any_decl_id.has_value());
+
+  ++it;
+  n = *it;
+  // A FunctionDecl node, so will match.
+  fn_decl_id = tree.TryAs<FunctionDeclId>(n);
+  ASSERT_TRUE(fn_decl_id.has_value());
+  EXPECT_TRUE(*fn_decl_id == n);
+  // Under normal usage, this function should be used with `auto`, but for
+  // a test it is nice to verify that it is returning the expected type.
+  // NOLINTNEXTLINE(modernize-use-auto).
+  FunctionDeclId fn_decl_id2 = tree.As<FunctionDeclId>(n);
+  EXPECT_TRUE(*fn_decl_id == fn_decl_id2);
+
+  any_fn_decl_id = tree.TryAs<AnyFunctionDeclId>(n);
+  ASSERT_TRUE(any_fn_decl_id.has_value());
+  EXPECT_TRUE(*any_fn_decl_id == n);
+  // NOLINTNEXTLINE(modernize-use-auto).
+  AnyFunctionDeclId any_fn_decl_id2 = tree.As<AnyFunctionDeclId>(n);
+  EXPECT_TRUE(*any_fn_decl_id == any_fn_decl_id2);
+
+  any_decl_id = tree.TryAs<AnyDeclId>(n);
+  ASSERT_TRUE(any_decl_id.has_value());
+  EXPECT_TRUE(*any_decl_id == n);
+  // NOLINTNEXTLINE(modernize-use-auto).
+  AnyDeclId any_decl_id2 = tree.As<AnyDeclId>(n);
+  EXPECT_TRUE(*any_decl_id == any_decl_id2);
+}
+
+TEST_F(TreeTest, PrintPostorderAsYaml) {
+  auto [tokens, tree_and_subtrees] =
+      compile_helper_.GetTokenizedBufferWithTreeAndSubtrees("fn F();");
+  EXPECT_FALSE(tree_and_subtrees.tree().has_errors());
+  RawStringOstream print_stream;
+  tree_and_subtrees.tree().Print(print_stream);
 
   auto file = Yaml::Sequence(ElementsAre(
+      Yaml::Mapping(ElementsAre(Pair("kind", "FileStart"), Pair("text", ""))),
       Yaml::Mapping(
           ElementsAre(Pair("kind", "FunctionIntroducer"), Pair("text", "fn"))),
-      Yaml::Mapping(ElementsAre(Pair("kind", "Name"), Pair("text", "F"))),
-      Yaml::Mapping(
-          ElementsAre(Pair("kind", "ParameterListStart"), Pair("text", "("))),
-      Yaml::Mapping(ElementsAre(Pair("kind", "ParameterList"),
+      Yaml::Mapping(ElementsAre(Pair("kind", "IdentifierNameBeforeParams"),
+                                Pair("text", "F"))),
+      Yaml::Mapping(ElementsAre(Pair("kind", "ExplicitParamListStart"),
+                                Pair("text", "("))),
+      Yaml::Mapping(ElementsAre(Pair("kind", "ExplicitParamList"),
                                 Pair("text", ")"), Pair("subtree_size", "2"))),
-      Yaml::Mapping(ElementsAre(Pair("kind", "FunctionDeclaration"),
-                                Pair("text", ";"), Pair("subtree_size", "5"))),
+      Yaml::Mapping(ElementsAre(Pair("kind", "FunctionDecl"), Pair("text", ";"),
+                                Pair("subtree_size", "5"))),
       Yaml::Mapping(ElementsAre(Pair("kind", "FileEnd"), Pair("text", "")))));
 
   auto root = Yaml::Sequence(ElementsAre(Yaml::Mapping(
-      ElementsAre(Pair("filename", "test.carbon"), Pair("parse_tree", file)))));
+      ElementsAre(Pair("filename", tokens.source().filename().str()),
+                  Pair("parse_tree", file)))));
 
   EXPECT_THAT(Yaml::Value::FromText(print_stream.TakeStr()),
               IsYaml(ElementsAre(root)));
 }
 
-TEST_F(TreeTest, PrintPreorderAsYAML) {
-  Lex::TokenizedBuffer tokens = GetTokenizedBuffer("fn F();");
-  Tree tree = Tree::Parse(tokens, consumer, /*vlog_stream=*/nullptr);
-  EXPECT_FALSE(tree.has_errors());
-  TestRawOstream print_stream;
-  tree.Print(print_stream, /*preorder=*/true);
+TEST_F(TreeTest, PrintPreorderAsYaml) {
+  auto [tokens, tree_and_subtrees] =
+      compile_helper_.GetTokenizedBufferWithTreeAndSubtrees("fn F();");
+  EXPECT_FALSE(tree_and_subtrees.tree().has_errors());
+  RawStringOstream print_stream;
+  tree_and_subtrees.PrintPreorder(print_stream);
 
-  auto parameter_list = Yaml::Sequence(ElementsAre(Yaml::Mapping(
-      ElementsAre(Pair("node_index", "2"), Pair("kind", "ParameterListStart"),
-                  Pair("text", "(")))));
+  auto param_list = Yaml::Sequence(ElementsAre(Yaml::Mapping(
+      ElementsAre(Pair("node_index", "3"),
+                  Pair("kind", "ExplicitParamListStart"), Pair("text", "(")))));
 
   auto function_decl = Yaml::Sequence(ElementsAre(
-      Yaml::Mapping(ElementsAre(Pair("node_index", "0"),
+      Yaml::Mapping(ElementsAre(Pair("node_index", "1"),
                                 Pair("kind", "FunctionIntroducer"),
                                 Pair("text", "fn"))),
-      Yaml::Mapping(ElementsAre(Pair("node_index", "1"), Pair("kind", "Name"),
+      Yaml::Mapping(ElementsAre(Pair("node_index", "2"),
+                                Pair("kind", "IdentifierNameBeforeParams"),
                                 Pair("text", "F"))),
-      Yaml::Mapping(ElementsAre(Pair("node_index", "3"),
-                                Pair("kind", "ParameterList"),
+      Yaml::Mapping(ElementsAre(Pair("node_index", "4"),
+                                Pair("kind", "ExplicitParamList"),
                                 Pair("text", ")"), Pair("subtree_size", "2"),
-                                Pair("children", parameter_list)))));
+                                Pair("children", param_list)))));
 
   auto file = Yaml::Sequence(ElementsAre(
-      Yaml::Mapping(ElementsAre(Pair("node_index", "4"),
-                                Pair("kind", "FunctionDeclaration"),
-                                Pair("text", ";"), Pair("subtree_size", "5"),
-                                Pair("children", function_decl))),
+      Yaml::Mapping(ElementsAre(Pair("node_index", "0"),
+                                Pair("kind", "FileStart"), Pair("text", ""))),
       Yaml::Mapping(ElementsAre(Pair("node_index", "5"),
+                                Pair("kind", "FunctionDecl"), Pair("text", ";"),
+                                Pair("subtree_size", "5"),
+                                Pair("children", function_decl))),
+      Yaml::Mapping(ElementsAre(Pair("node_index", "6"),
                                 Pair("kind", "FileEnd"), Pair("text", "")))));
 
   auto root = Yaml::Sequence(ElementsAre(Yaml::Mapping(
-      ElementsAre(Pair("filename", "test.carbon"), Pair("parse_tree", file)))));
+      ElementsAre(Pair("filename", tokens.source().filename().str()),
+                  Pair("parse_tree", file)))));
 
   EXPECT_THAT(Yaml::Value::FromText(print_stream.TakeStr()),
               IsYaml(ElementsAre(root)));
@@ -120,10 +167,12 @@ TEST_F(TreeTest, HighRecursion) {
   code.append(10000, '(');
   code.append(10000, ')');
   code += "; }";
-  Lex::TokenizedBuffer tokens = GetTokenizedBuffer(code);
+  Lex::TokenizedBuffer& tokens = compile_helper_.GetTokenizedBuffer(code);
   ASSERT_FALSE(tokens.has_errors());
   Testing::MockDiagnosticConsumer consumer;
-  Tree tree = Tree::Parse(tokens, consumer, /*vlog_stream=*/nullptr);
+  Parse::ParseOptions options;
+  options.consumer = &consumer;
+  Tree tree = Parse(tokens, options);
   EXPECT_FALSE(tree.has_errors());
 }
 

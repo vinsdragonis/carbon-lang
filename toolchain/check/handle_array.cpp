@@ -3,53 +3,58 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "toolchain/check/context.h"
+#include "toolchain/check/convert.h"
+#include "toolchain/check/handle.h"
+#include "toolchain/check/inst.h"
+#include "toolchain/check/type.h"
 #include "toolchain/parse/node_kind.h"
-#include "toolchain/sem_ir/node.h"
-#include "toolchain/sem_ir/node_kind.h"
 
 namespace Carbon::Check {
 
-auto HandleArrayExpressionStart(Context& /*context*/,
-                                Parse::Node /*parse_node*/) -> bool {
+auto HandleParseNode(Context& /*context*/,
+                     Parse::ArrayExprOpenParenId /*node_id*/) -> bool {
   return true;
 }
 
-auto HandleArrayExpressionSemi(Context& context, Parse::Node parse_node)
+auto HandleParseNode(Context& /*context*/,
+                     Parse::ArrayExprKeywordId /*node_id*/) -> bool {
+  return true;
+}
+
+auto HandleParseNode(Context& /*context*/, Parse::ArrayExprCommaId /*node_id*/)
     -> bool {
-  context.node_stack().Push(parse_node);
   return true;
 }
 
-auto HandleArrayExpression(Context& context, Parse::Node parse_node) -> bool {
-  // TODO: Handle array type with undefined bound.
-  if (context.parse_tree().node_kind(context.node_stack().PeekParseNode()) ==
-      Parse::NodeKind::ArrayExpressionSemi) {
-    context.node_stack().PopAndIgnore();
-    context.node_stack().PopAndIgnore();
-    return context.TODO(parse_node, "HandleArrayExpressionWithoutBounds");
+auto HandleParseNode(Context& context, Parse::ArrayExprId node_id) -> bool {
+  auto bound_inst_id = context.node_stack().PopExpr();
+  auto [element_type_node_id, element_type_inst_id] =
+      context.node_stack().PopExprWithNodeId();
+
+  auto element_type =
+      ExprAsType(context, element_type_node_id, element_type_inst_id);
+
+  // The array bound must be a constant. Diagnose this prior to conversion
+  // because conversion to `IntLiteral` will produce a generic "non-constant
+  // call to compile-time-only function" error.
+  //
+  // TODO: Should we support runtime-phase bounds in cases such as:
+  //   comptime fn F(n: i32) -> type { return array(i32; n); }
+  if (!context.constant_values().Get(bound_inst_id).is_constant()) {
+    CARBON_DIAGNOSTIC(InvalidArrayExpr, Error, "array bound is not a constant");
+    context.emitter().Emit(bound_inst_id, InvalidArrayExpr);
+    context.node_stack().Push(node_id, SemIR::ErrorInst::InstId);
+    return true;
   }
 
-  auto bound_node_id = context.node_stack().PopExpression();
-  context.node_stack()
-      .PopAndDiscardSoloParseNode<Parse::NodeKind::ArrayExpressionSemi>();
-  auto element_type_node_id = context.node_stack().PopExpression();
-  auto bound_node = context.semantics_ir().GetNode(bound_node_id);
-  if (bound_node.kind() == SemIR::NodeKind::IntegerLiteral) {
-    auto bound_value = context.semantics_ir().GetIntegerLiteral(
-        bound_node.GetAsIntegerLiteral());
-    // TODO: Produce an error if the array type is too large.
-    if (bound_value.getActiveBits() <= 64) {
-      context.AddNodeAndPush(
-          parse_node,
-          SemIR::Node::ArrayType::Make(
-              parse_node, SemIR::TypeId::TypeType, bound_node_id,
-              context.ExpressionAsType(parse_node, element_type_node_id)));
-      return true;
-    }
-  }
-  CARBON_DIAGNOSTIC(InvalidArrayExpression, Error, "Invalid array expression.");
-  context.emitter().Emit(parse_node, InvalidArrayExpression);
-  context.node_stack().Push(parse_node, SemIR::NodeId::BuiltinError);
+  bound_inst_id = ConvertToValueOfType(
+      context, SemIR::LocId(bound_inst_id), bound_inst_id,
+      GetSingletonType(context, SemIR::IntLiteralType::TypeInstId));
+  AddInstAndPush<SemIR::ArrayType>(
+      context, node_id,
+      {.type_id = SemIR::TypeType::TypeId,
+       .bound_id = bound_inst_id,
+       .element_type_inst_id = element_type.inst_id});
   return true;
 }
 

@@ -16,7 +16,6 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
         -   [Comment on proposals](#comment-on-proposals)
         -   [Contribute design ideas to Carbon](#contribute-design-ideas-to-carbon)
     -   [Contributing to the language implementation](#contributing-to-the-language-implementation)
-        -   [Experiment with Carbon and report issues (no code)](#experiment-with-carbon-and-report-issues-no-code)
         -   [Review and comment on Pull Requests (no code)](#review-and-comment-on-pull-requests-no-code)
         -   [Implement Carbon's design](#implement-carbons-design)
         -   [Triage, analyze or address bugs](#triage-analyze-or-address-bugs)
@@ -26,6 +25,7 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
     -   [Collaboration systems](#collaboration-systems)
         -   [Getting access](#getting-access)
     -   [Contribution tools](#contribution-tools)
+        -   [Using AI-based contribution tools](#using-ai-based-contribution-tools)
     -   [Contribution guidelines and standards](#contribution-guidelines-and-standards)
         -   [Guidelines and philosophy for contributions](#guidelines-and-philosophy-for-contributions)
         -   [How to say things](#how-to-say-things)
@@ -94,17 +94,6 @@ early, before even writing a proposal, and the process explains how to do that.
 
 ### Contributing to the language implementation
 
-#### Experiment with Carbon and report issues (no code)
-
-You can experiment with the current implementation of the Carbon language using
-the [online version](https://carbon.compiler-explorer.com/) of Carbon Explorer.
-The state of the design implementation for Explorer is documented on the
-["Are we explorer yet"](https://github.com/carbon-language/carbon-lang/wiki/Are-we-explorer-yet%3F)
-wiki page.
-
-If you uncover a bug or implementation problem, you can
-[report an issue on GitHub](https://github.com/carbon-language/carbon-lang/issues/new/choose).
-
 #### Review and comment on Pull Requests (no code)
 
 Helping with
@@ -113,18 +102,11 @@ a good way to provide feedback, while getting a acquainted with the code base.
 
 #### Implement Carbon's design
 
-The implementation of the Carbon language design takes place in two distinct
-locations:
+The implementation of the Carbon language design is currently focused on the
+[Carbon toolchain](/toolchain/) (see Carbon
+[toolchain issues](https://github.com/carbon-language/carbon-lang/issues?q=is%3Aissue+is%3Aopen+label%3Atoolchain))
 
--   the [Carbon Explorer](/explorer/) (see Carbon
-    [Explorer issues](https://github.com/carbon-language/carbon-lang/issues?q=is%3Aissue+is%3Aopen+label%3Aexplorer)),
-    and
--   the [Carbon toolchain](/toolchain/) (see Carbon
-    [toolchain issues](https://github.com/carbon-language/carbon-lang/issues?q=is%3Aissue+is%3Aopen+label%3Atoolchain))
-
-The Carbon Explorer is generally simpler to contribute to, while the toolchain
-implements the compiler and tools needed for the language. **Some issues are
-also marked as
+**Some issues are also marked as
 ["good first issues"](https://github.com/carbon-language/carbon-lang/labels/good%20first%20issue)**.
 These are intended to be a good place to start contributing.
 
@@ -196,14 +178,13 @@ the Code of Conduct.
 -   [Google Calendar](https://calendar.google.com/calendar/embed?src=c_07td7k4qjq0ssb4gdl6bmbnkik%40group.calendar.google.com)
     is used for meeting invites and project reminders. Contributors may add
     calendar entries for meetings added to discuss details. Standard entries
-    are:
-
-    -   The
-        [weekly sync](https://docs.google.com/document/d/1dwS2sJ8tsN3LwxqmZSv9OvqutYhP71dK9Dmr1IXQFTs/edit?resourcekey=0-NxBWgL9h05yD2GOR3wUisg),
-        where contributors are welcome.
-    -   [Open discussions](https://docs.google.com/document/d/1tEt4iM6vfcY0O0DG0uOEMIbaXcZXlNREc2ChNiEtn_w/edit),
-        which are unstructured meeting slots used for discussing proposals,
-        tooling, and other Carbon topics based on who attends.
+    have
+    [minutes](https://drive.google.com/drive/folders/1VssO6kn9-HeKfzPDqBDR0Sy5CUE0OnSs)
+    and include:
+    -   The weekly sync, where contributors are welcome.
+    -   Open discussions, which are unstructured meeting slots used for
+        discussing proposals, tooling, and other Carbon topics based on who
+        attends.
 
 #### Getting access
 
@@ -247,6 +228,25 @@ documentation for information on setting up a git client for Carbon development,
 as well as helpful tooling that will ease the contribution process. For example,
 [pre-commit](https://pre-commit.com) is used to simplify
 [code review](/docs/project/code_review.md).
+
+#### Using AI-based contribution tools
+
+All submissions to Carbon need to follow our
+[Contributor License Agreement (CLA)](#contributor-license-agreements-clas), in
+which contributors agree that their contribution is an original work of
+authorship. This doesn’t prohibit the use of coding assistance tools, but what’s
+submitted does need to be a contributor’s original creation.
+
+All contributions, regardless of what tools are used, are also still subject to
+normal code review and our
+[guidelines and standards](#contribution-guidelines-and-standards) below.
+
+Additionally, we want contributions to Carbon to also be viable as contributions
+to LLVM so that we can move things between these projects where relevant. We
+selected our license in part for this reason, and the same should be true for
+the use of AI-based coding tools. Any contributions to Carbon should also abide
+by the guidance in the
+[LLVM Developer Policy around AI generated code](https://llvm.org/docs/DeveloperPolicy.html#ai-generated-contributions).
 
 ### Contribution guidelines and standards
 

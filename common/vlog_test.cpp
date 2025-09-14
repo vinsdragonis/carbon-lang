@@ -7,7 +7,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "testing/base/test_raw_ostream.h"
+#include <string>
+
+#include "common/raw_string_ostream.h"
 
 namespace Carbon::Testing {
 namespace {
@@ -24,12 +26,13 @@ class VLogger {
     }
   }
 
-  void VLog() { CARBON_VLOG() << "Test\n"; }
+  auto VLog() -> void { CARBON_VLOG("Test\n"); }
+  auto VLogFormatArgs() -> void { CARBON_VLOG("Test {0} {1} {2}\n", 1, 2, 3); }
 
   auto TakeStr() -> std::string { return buffer_.TakeStr(); }
 
  private:
-  TestRawOstream buffer_;
+  RawStringOstream buffer_;
 
   llvm::raw_ostream* vlog_stream_ = nullptr;
 };
@@ -38,6 +41,8 @@ TEST(VLogTest, Enabled) {
   VLogger vlog(/*enable=*/true);
   vlog.VLog();
   EXPECT_THAT(vlog.TakeStr(), StrEq("Test\n"));
+  vlog.VLogFormatArgs();
+  EXPECT_THAT(vlog.TakeStr(), StrEq("Test 1 2 3\n"));
 }
 
 TEST(VLogTest, Disabled) {
@@ -45,6 +50,14 @@ TEST(VLogTest, Disabled) {
   vlog.VLog();
   EXPECT_THAT(vlog.TakeStr(), IsEmpty());
 }
+
+TEST(VLogTest, To) {
+  RawStringOstream buffer;
+  CARBON_VLOG_TO(&buffer, "Test");
+  EXPECT_THAT(buffer.TakeStr(), "Test");
+}
+
+TEST(VLogTest, ToNull) { CARBON_VLOG_TO(nullptr, "Unused"); }
 
 }  // namespace
 }  // namespace Carbon::Testing

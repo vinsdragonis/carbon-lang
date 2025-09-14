@@ -1,24 +1,28 @@
 {
-  "name": "carbon-lang",
-  "displayName": "carbon-lang",
-  "description": "Carbon Language support",
-  "version": "0.0.1",
+  "name": "carbon-vscode",
+  "displayName": "Carbon Language",
+  "version": "0.0.7",
+  "publisher": "carbon-lang",
+  "description": "Carbon language support for Visual Studio Code.",
   "repository": {
     "url": "https://github.com/carbon-language/carbon-lang"
   },
   "engines": {
-    "vscode": "^1.70.1"
+    "vscode": "^1.90.0"
   },
   "categories": [
     "Programming Languages"
   ],
+  "icon": "images/icon.png",
   "activationEvents": [],
-  "main": "./src/extension.js",
+  "main": "./dist/extension.js",
   "contributes": {
     "languages": [
       {
         "id": "carbon",
-        "aliases": [],
+        "aliases": [
+          "Carbon"
+        ],
         "extensions": [
           ".carbon"
         ],
@@ -29,17 +33,60 @@
       {
         "language": "carbon",
         "scopeName": "source.carbon",
-        "path": "Carbon.plist"
+        "path": "./carbon.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Carbon Language",
+      "properties": {
+        "carbon.carbonPath": {
+          "type": "string",
+          "description": "The path to the `carbon` binary.",
+          "default": "./bazel-bin/toolchain/carbon"
+        },
+        "carbon.carbonServerCommandArgs": {
+          "type": "string",
+          "description": "Extra flags to pass to `carbon` before the `language-server` subcommand, such as `-v` for debugging.",
+          "default": ""
+        },
+        "carbon.carbonServerSubcommandArgs": {
+          "type": "string",
+          "description": "Extra flags to pass to the `language-server` subcommand.",
+          "default": ""
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "carbon.lsp.restart",
+        "title": "carbon: Restart language server"
       }
     ]
   },
   "scripts": {
-    "package": "mkdir -p out && vsce package -o out/carbon.vsix"
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint"
   },
   "devDependencies": {
-    "@vscode/vsce": "^2.19.0"
+    "@eslint/js": "^9.13.0",
+    "@stylistic/eslint-plugin": "^2.9.0",
+    "@types/node": "^20",
+    "@types/vscode": "^1.73.0",
+    "@vscode/vsce": "^2.27.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.13.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.16.0"
   },
   "dependencies": {
-    "vscode-languageclient": "^8.1.0"
+    "vscode-languageclient": "^9.0.1"
   }
 }

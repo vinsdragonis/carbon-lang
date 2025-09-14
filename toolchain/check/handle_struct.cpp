@@ -2,104 +2,181 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include "common/map.h"
 #include "toolchain/check/context.h"
+#include "toolchain/check/convert.h"
+#include "toolchain/check/handle.h"
+#include "toolchain/check/inst.h"
+#include "toolchain/check/type.h"
+#include "toolchain/diagnostics/format_providers.h"
 
 namespace Carbon::Check {
 
-auto HandleStructComma(Context& context, Parse::Node /*parse_node*/) -> bool {
-  context.ParamOrArgComma();
+auto HandleParseNode(Context& context, Parse::StructLiteralStartId node_id)
+    -> bool {
+  context.scope_stack().PushForSameRegion();
+  context.node_stack().Push(node_id);
+  context.struct_type_fields_stack().PushArray();
+  context.param_and_arg_refs_stack().Push();
   return true;
 }
 
-auto HandleStructFieldDesignator(Context& context, Parse::Node /*parse_node*/)
+auto HandleParseNode(Context& context, Parse::StructTypeLiteralStartId node_id)
     -> bool {
+  context.scope_stack().PushForSameRegion();
+  context.node_stack().Push(node_id);
+  context.struct_type_fields_stack().PushArray();
+  return true;
+}
+
+auto HandleParseNode(Context& context,
+                     Parse::StructFieldDesignatorId /*node_id*/) -> bool {
   // This leaves the designated name on top because the `.` isn't interesting.
-  CARBON_CHECK(
-      context.parse_tree().node_kind(context.node_stack().PeekParseNode()) ==
-      Parse::NodeKind::Name);
+  CARBON_CHECK(context.node_stack().PeekIs<SemIR::NameId>());
   return true;
 }
 
-auto HandleStructFieldType(Context& context, Parse::Node parse_node) -> bool {
-  auto [type_node, type_id] = context.node_stack().PopExpressionWithParseNode();
-  SemIR::TypeId cast_type_id = context.ExpressionAsType(type_node, type_id);
-
-  auto [name_node, name_id] =
-      context.node_stack().PopWithParseNode<Parse::NodeKind::Name>();
-
-  context.AddNodeAndPush(parse_node, SemIR::Node::StructTypeField::Make(
-                                         name_node, name_id, cast_type_id));
-  return true;
-}
-
-auto HandleStructFieldUnknown(Context& context, Parse::Node parse_node)
+auto HandleParseNode(Context& context, Parse::StructLiteralCommaId /*node_id*/)
     -> bool {
-  return context.TODO(parse_node, "HandleStructFieldUnknown");
+  context.param_and_arg_refs_stack().ApplyComma();
+  return true;
 }
 
-auto HandleStructFieldValue(Context& context, Parse::Node parse_node) -> bool {
-  auto [value_parse_node, value_node_id] =
-      context.node_stack().PopExpressionWithParseNode();
-  SemIR::StringId name_id = context.node_stack().Pop<Parse::NodeKind::Name>();
+auto HandleParseNode(Context& /*context*/,
+                     Parse::StructTypeLiteralCommaId /*node_id*/) -> bool {
+  return true;
+}
+
+auto HandleParseNode(Context& context, Parse::StructLiteralFieldId node_id)
+    -> bool {
+  auto value_inst_id = context.node_stack().PopExpr();
+  // Get the name while leaving it on the stack.
+  auto name_id = context.node_stack().Peek<Parse::NodeCategory::MemberName>();
 
   // Store the name for the type.
-  context.args_type_info_stack().AddNode(SemIR::Node::StructTypeField::Make(
-      parse_node, name_id,
-      context.semantics_ir().GetNode(value_node_id).type_id()));
+  auto value_type_inst_id =
+      context.types().GetInstId(context.insts().Get(value_inst_id).type_id());
+  context.struct_type_fields_stack().AppendToTop(
+      {.name_id = name_id, .type_inst_id = value_type_inst_id});
 
   // Push the value back on the stack as an argument.
-  context.node_stack().Push(parse_node, value_node_id);
+  context.node_stack().Push(node_id, value_inst_id);
   return true;
 }
 
-auto HandleStructLiteral(Context& context, Parse::Node parse_node) -> bool {
-  auto refs_id = context.ParamOrArgEnd(
-      Parse::NodeKind::StructLiteralOrStructTypeLiteralStart);
+auto HandleParseNode(Context& context,
+                     Parse::StructTypeLiteralFieldId /*node_id*/) -> bool {
+  auto [type_node, type_id] = context.node_stack().PopExprWithNodeId();
+  auto cast_type_inst_id = ExprAsType(context, type_node, type_id).inst_id;
+  // Get the name while leaving it on the stack.
+  auto name_id = context.node_stack().Peek<Parse::NodeCategory::MemberName>();
 
-  context.PopScope();
-  context.node_stack()
-      .PopAndDiscardSoloParseNode<
-          Parse::NodeKind::StructLiteralOrStructTypeLiteralStart>();
-  auto type_block_id = context.args_type_info_stack().Pop();
-
-  auto type_id = context.CanonicalizeStructType(parse_node, type_block_id);
-
-  auto value_id = context.AddNode(
-      SemIR::Node::StructLiteral::Make(parse_node, type_id, refs_id));
-  context.node_stack().Push(parse_node, value_id);
+  context.struct_type_fields_stack().AppendToTop(
+      {.name_id = name_id, .type_inst_id = cast_type_inst_id});
   return true;
 }
 
-auto HandleStructLiteralOrStructTypeLiteralStart(Context& context,
-                                                 Parse::Node parse_node)
+// Diagnoses and returns true if there's a duplicate name.
+static auto DiagnoseDuplicateNames(
+    Context& context, llvm::ArrayRef<Parse::NodeId> field_name_nodes,
+    llvm::ArrayRef<SemIR::StructTypeField> fields, bool is_struct_type_literal)
     -> bool {
-  context.PushScope();
-  context.node_stack().Push(parse_node);
-  // At this point we aren't sure whether this will be a value or type literal,
-  // so we push onto args irrespective. It just won't be used for a type
-  // literal.
-  context.args_type_info_stack().Push();
-  context.ParamOrArgStart();
+  Map<SemIR::NameId, Parse::NodeId> names;
+  for (auto [field_name_node, field] : llvm::zip(field_name_nodes, fields)) {
+    auto result = names.Insert(field.name_id, field_name_node);
+    if (!result.is_inserted()) {
+      CARBON_DIAGNOSTIC(StructNameDuplicate, Error,
+                        "duplicated field name `{1}` in "
+                        "{0:struct type literal|struct literal}",
+                        Diagnostics::BoolAsSelect, SemIR::NameId);
+      CARBON_DIAGNOSTIC(StructNamePrevious, Note,
+                        "field with the same name here");
+      context.emitter()
+          .Build(result.value(), StructNameDuplicate, is_struct_type_literal,
+                 field.name_id)
+          .Note(field_name_node, StructNamePrevious)
+          .Emit();
+      return true;
+    }
+  }
+  return false;
+}
+
+// Pops the names of each field from the stack. These will have been left while
+// handling struct fields.
+static auto PopFieldNameNodes(Context& context, size_t field_count)
+    -> llvm::SmallVector<Parse::NodeId> {
+  llvm::SmallVector<Parse::NodeId> nodes;
+  nodes.reserve(field_count);
+  while (true) {
+    auto [name_node, _] =
+        context.node_stack().PopWithNodeIdIf<Parse::NodeCategory::MemberName>();
+    if (name_node.has_value()) {
+      nodes.push_back(name_node);
+    } else {
+      break;
+    }
+  }
+  CARBON_CHECK(nodes.size() == field_count, "Found {0} names, expected {1}",
+               nodes.size(), field_count);
+  return nodes;
+}
+
+auto HandleParseNode(Context& context, Parse::StructLiteralId node_id) -> bool {
+  if (!context.node_stack().PeekIs(Parse::NodeCategory::MemberName)) {
+    // Remove the last parameter from the node stack before collecting names.
+    context.param_and_arg_refs_stack().EndNoPop(
+        Parse::NodeKind::StructLiteralStart);
+  }
+
+  auto fields = context.struct_type_fields_stack().PeekArray();
+  llvm::SmallVector<Parse::NodeId> field_name_nodes =
+      PopFieldNameNodes(context, fields.size());
+
+  auto elements_id = context.param_and_arg_refs_stack().EndAndPop(
+      Parse::NodeKind::StructLiteralStart);
+
+  context.scope_stack().Pop();
+  context.node_stack()
+      .PopAndDiscardSoloNodeId<Parse::NodeKind::StructLiteralStart>();
+
+  if (DiagnoseDuplicateNames(context, field_name_nodes, fields,
+                             /*is_struct_type_literal=*/false)) {
+    context.node_stack().Push(node_id, SemIR::ErrorInst::InstId);
+  } else {
+    auto type_id = GetStructType(
+        context, context.struct_type_fields().AddCanonical(fields));
+
+    auto value_id = AddInst<SemIR::StructLiteral>(
+        context, node_id, {.type_id = type_id, .elements_id = elements_id});
+    context.node_stack().Push(node_id, value_id);
+  }
+
+  context.struct_type_fields_stack().PopArray();
   return true;
 }
 
-auto HandleStructTypeLiteral(Context& context, Parse::Node parse_node) -> bool {
-  auto refs_id = context.ParamOrArgEnd(
-      Parse::NodeKind::StructLiteralOrStructTypeLiteralStart);
+auto HandleParseNode(Context& context, Parse::StructTypeLiteralId node_id)
+    -> bool {
+  auto fields = context.struct_type_fields_stack().PeekArray();
+  llvm::SmallVector<Parse::NodeId> field_name_nodes =
+      PopFieldNameNodes(context, fields.size());
 
-  context.PopScope();
+  context.scope_stack().Pop();
   context.node_stack()
-      .PopAndDiscardSoloParseNode<
-          Parse::NodeKind::StructLiteralOrStructTypeLiteralStart>();
-  // This is only used for value literals.
-  context.args_type_info_stack().Pop();
+      .PopAndDiscardSoloNodeId<Parse::NodeKind::StructTypeLiteralStart>();
 
-  CARBON_CHECK(refs_id != SemIR::NodeBlockId::Empty)
-      << "{} is handled by StructLiteral.";
+  if (DiagnoseDuplicateNames(context, field_name_nodes, fields,
+                             /*is_struct_type_literal=*/true)) {
+    context.node_stack().Push(node_id, SemIR::ErrorInst::InstId);
+  } else {
+    auto fields_id = context.struct_type_fields().AddCanonical(fields);
+    AddInstAndPush<SemIR::StructType>(
+        context, node_id,
+        {.type_id = SemIR::TypeType::TypeId, .fields_id = fields_id});
+  }
 
-  context.AddNodeAndPush(parse_node,
-                         SemIR::Node::StructType::Make(
-                             parse_node, SemIR::TypeId::TypeType, refs_id));
+  context.struct_type_fields_stack().PopArray();
   return true;
 }
 

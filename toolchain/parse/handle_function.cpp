@@ -3,40 +3,35 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "toolchain/parse/context.h"
+#include "toolchain/parse/handle.h"
 
 namespace Carbon::Parse {
 
 auto HandleFunctionIntroducer(Context& context) -> void {
   auto state = context.PopState();
-
-  context.AddLeafNode(NodeKind::FunctionIntroducer, context.Consume());
-
-  state.state = State::FunctionAfterParameters;
-  context.PushState(state);
-  context.PushState(State::DeclarationNameAndParamsAsRequired, state.token);
+  context.PushState(state, StateKind::FunctionAfterParams);
+  context.PushState(StateKind::DeclNameAndParams, state.token);
 }
 
-auto HandleFunctionAfterParameters(Context& context) -> void {
+auto HandleFunctionAfterParams(Context& context) -> void {
   auto state = context.PopState();
 
   // Regardless of whether there's a return type, we'll finish the signature.
-  state.state = State::FunctionSignatureFinish;
-  context.PushState(state);
+  context.PushState(state, StateKind::FunctionSignatureFinish);
 
   // If there is a return type, parse the expression before adding the return
-  // type nod.e
+  // type node.
   if (context.PositionIs(Lex::TokenKind::MinusGreater)) {
-    context.PushState(State::FunctionReturnTypeFinish);
-    ++context.position();
-    context.PushStateForExpression(PrecedenceGroup::ForType());
+    context.PushState(StateKind::FunctionReturnTypeFinish);
+    context.ConsumeAndDiscard();
+    context.PushStateForExpr(PrecedenceGroup::ForType());
   }
 }
 
 auto HandleFunctionReturnTypeFinish(Context& context) -> void {
   auto state = context.PopState();
 
-  context.AddNode(NodeKind::ReturnType, state.token, state.subtree_start,
-                  state.has_error);
+  context.AddNode(NodeKind::ReturnType, state.token, state.has_error);
 }
 
 auto HandleFunctionSignatureFinish(Context& context) -> void {
@@ -44,43 +39,52 @@ auto HandleFunctionSignatureFinish(Context& context) -> void {
 
   switch (context.PositionKind()) {
     case Lex::TokenKind::Semi: {
-      context.AddNode(NodeKind::FunctionDeclaration, context.Consume(),
-                      state.subtree_start, state.has_error);
+      context.AddNode(NodeKind::FunctionDecl, context.Consume(),
+                      state.has_error);
       break;
     }
     case Lex::TokenKind::OpenCurlyBrace: {
-      if (auto decl_context = context.GetDeclarationContext();
-          decl_context == Context::DeclarationContext::Interface ||
-          decl_context == Context::DeclarationContext::NamedConstraint) {
-        CARBON_DIAGNOSTIC(
-            MethodImplNotAllowed, Error,
-            "Method implementations are not allowed in interfaces.");
-        context.emitter().Emit(*context.position(), MethodImplNotAllowed);
-        context.RecoverFromDeclarationError(state,
-                                            NodeKind::FunctionDeclaration,
-                                            /*skip_past_likely_end=*/true);
-        break;
-      }
-
-      context.AddNode(NodeKind::FunctionDefinitionStart, context.Consume(),
-                      state.subtree_start, state.has_error);
+      context.AddFunctionDefinitionStart(context.Consume(), state.has_error);
       // Any error is recorded on the FunctionDefinitionStart.
       state.has_error = false;
-      state.state = State::FunctionDefinitionFinish;
-      context.PushState(state);
-      context.PushState(State::StatementScopeLoop);
+      context.PushState(state, StateKind::FunctionDefinitionFinish);
+      context.PushState(StateKind::StatementScopeLoop);
+      break;
+    }
+    case Lex::TokenKind::Equal: {
+      context.AddNode(NodeKind::BuiltinFunctionDefinitionStart,
+                      context.Consume(), state.has_error);
+      if (!context.ConsumeAndAddLeafNodeIf(Lex::TokenKind::StringLiteral,
+                                           NodeKind::BuiltinName)) {
+        CARBON_DIAGNOSTIC(ExpectedBuiltinName, Error,
+                          "expected builtin function name after `=`");
+        context.emitter().Emit(*context.position(), ExpectedBuiltinName);
+        state.has_error = true;
+      }
+      auto semi = context.ConsumeIf(Lex::TokenKind::Semi);
+      if (!semi && !state.has_error) {
+        context.DiagnoseExpectedDeclSemi(context.tokens().GetKind(state.token));
+        state.has_error = true;
+      }
+      if (state.has_error) {
+        context.RecoverFromDeclError(state, NodeKind::BuiltinFunctionDefinition,
+                                     /*skip_past_likely_end=*/true);
+      } else {
+        context.AddNode(NodeKind::BuiltinFunctionDefinition, *semi,
+                        state.has_error);
+      }
       break;
     }
     default: {
       if (!state.has_error) {
-        context.EmitExpectedDeclarationSemiOrDefinition(Lex::TokenKind::Fn);
+        context.DiagnoseExpectedDeclSemiOrDefinition(Lex::TokenKind::Fn);
       }
       // Only need to skip if we've not already found a new line.
       bool skip_past_likely_end =
           context.tokens().GetLine(*context.position()) ==
           context.tokens().GetLine(state.token);
-      context.RecoverFromDeclarationError(state, NodeKind::FunctionDeclaration,
-                                          skip_past_likely_end);
+      context.RecoverFromDeclError(state, NodeKind::FunctionDecl,
+                                   skip_past_likely_end);
       break;
     }
   }
@@ -88,8 +92,7 @@ auto HandleFunctionSignatureFinish(Context& context) -> void {
 
 auto HandleFunctionDefinitionFinish(Context& context) -> void {
   auto state = context.PopState();
-  context.AddNode(NodeKind::FunctionDefinition, context.Consume(),
-                  state.subtree_start, state.has_error);
+  context.AddFunctionDefinition(context.Consume(), state.has_error);
 }
 
 }  // namespace Carbon::Parse

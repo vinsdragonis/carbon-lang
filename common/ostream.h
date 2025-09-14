@@ -5,22 +5,29 @@
 #ifndef CARBON_COMMON_OSTREAM_H_
 #define CARBON_COMMON_OSTREAM_H_
 
-#include <ostream>
-
-#include "llvm/Support/raw_os_ostream.h"
 // Libraries should include this header instead of raw_ostream.
+
+#include <concepts>
+#include <ostream>
+#include <type_traits>
+
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/raw_os_ostream.h"
 #include "llvm/Support/raw_ostream.h"  // IWYU pragma: export
 
 namespace Carbon {
 
 // CRTP base class for printable types. Children (DerivedT) must implement:
-// - auto Print(llvm::raw_ostream& out) -> void
+// - auto Print(llvm::raw_ostream& out) const -> void
 template <typename DerivedT>
+// NOLINTNEXTLINE(bugprone-crtp-constructor-accessibility)
 class Printable {
   // Provides simple printing for debuggers.
-  LLVM_DUMP_METHOD void Dump() const {
-    static_cast<const DerivedT*>(this)->Print(llvm::errs());
+  LLVM_DUMP_METHOD auto Dump() const -> std::string {
+    std::string buffer;
+    llvm::raw_string_ostream stream(buffer);
+    static_cast<const DerivedT*>(this)->Print(stream);
+    return buffer;
   }
 
   // Supports printing to llvm::raw_ostream.
@@ -50,6 +57,36 @@ class Printable {
   }
 };
 
+// Helper class for printing strings with escapes.
+//
+// For example:
+//   stream << FormatEscaped(str);
+// Is equivalent to:
+//   stream.write_escaped(str);
+class FormatEscaped : public Printable<FormatEscaped> {
+ public:
+  explicit FormatEscaped(llvm::StringRef str, bool use_hex_escapes = false)
+      : str_(str), use_hex_escapes_(use_hex_escapes) {}
+
+  auto Print(llvm::raw_ostream& out) const -> void {
+    out.write_escaped(str_, use_hex_escapes_);
+  }
+
+ private:
+  llvm::StringRef str_;
+  bool use_hex_escapes_;
+};
+
+// Returns the result of printing the value.
+template <typename T>
+  requires std::derived_from<T, Printable<T>>
+inline auto PrintToString(const T& val) -> std::string {
+  std::string str;
+  llvm::raw_string_ostream stream(str);
+  stream << val;
+  return str;
+}
+
 }  // namespace Carbon
 
 namespace llvm {
@@ -62,7 +99,7 @@ namespace llvm {
 //
 // To make this overload be unusually low priority, it is designed to take even
 // the `std::ostream` parameter as a template, and SFINAE disable itself unless
-// that template parameter matches `std::ostream`. This ensures that an
+// that template parameter is derived from `std::ostream`. This ensures that an
 // *explicit* operator will be preferred when provided. Some LLVM types may have
 // this, and so we want to prioritize accordingly.
 //
@@ -70,11 +107,10 @@ namespace llvm {
 // `raw_os_ostream.h` so that we wouldn't need to inject into LLVM's namespace,
 // but supporting `std::ostream` isn't a priority for LLVM so we handle it
 // locally instead.
-template <typename StreamT, typename ClassT,
-          typename = std::enable_if_t<
-              std::is_base_of_v<std::ostream, std::decay_t<StreamT>>>,
-          typename = std::enable_if_t<
-              !std::is_same_v<std::decay_t<ClassT>, raw_ostream>>>
+template <typename StreamT, typename ClassT>
+  requires std::derived_from<std::decay_t<StreamT>, std::ostream> &&
+           (!std::same_as<std::decay_t<ClassT>, raw_ostream>) &&
+           requires(raw_ostream& os, const ClassT& value) { os << value; }
 auto operator<<(StreamT& standard_out, const ClassT& value) -> StreamT& {
   raw_os_ostream(standard_out) << value;
   return standard_out;

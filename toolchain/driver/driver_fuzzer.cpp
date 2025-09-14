@@ -5,13 +5,26 @@
 #include <cstring>
 #include <string>
 
+#include "common/exe_path.h"
+#include "common/raw_string_ostream.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/raw_ostream.h"
-#include "testing/base/test_raw_ostream.h"
+#include "testing/fuzzing/libfuzzer.h"
 #include "toolchain/driver/driver.h"
+#include "toolchain/install/install_paths.h"
 
 namespace Carbon::Testing {
+
+static const InstallPaths* install_paths = nullptr;
+
+// NOLINTNEXTLINE(readability-non-const-parameter): External API required types.
+extern "C" auto LLVMFuzzerInitialize(int* argc, char*** argv) -> int {
+  CARBON_CHECK(*argc >= 1, "Need the `argv[0]` value to initialize!");
+  install_paths = new InstallPaths(
+      InstallPaths::MakeForBazelRunfiles(FindExecutablePath((*argv)[0])));
+  return 0;
+}
 
 static auto Read(const unsigned char*& data, size_t& size, int& output)
     -> bool {
@@ -65,12 +78,15 @@ extern "C" auto LLVMFuzzerTestOneInput(const unsigned char* data, size_t size)
     size -= arg_length;
   }
 
-  llvm::vfs::InMemoryFileSystem fs;
-  TestRawOstream error_stream;
-  llvm::raw_null_ostream dest;
-  Driver d(fs, dest, error_stream);
-  if (!d.RunCommand(args)) {
-    if (error_stream.TakeStr().find("ERROR:") == std::string::npos) {
+  llvm::IntrusiveRefCntPtr<llvm::vfs::InMemoryFileSystem> fs =
+      new llvm::vfs::InMemoryFileSystem;
+  RawStringOstream error_stream;
+  llvm::raw_null_ostream null_ostream;
+  Driver driver(fs, install_paths, /*input_stream=*/nullptr, &null_ostream,
+                &error_stream, /*fuzzing=*/true);
+  if (!driver.RunCommand(args).success) {
+    auto str = error_stream.TakeStr();
+    if (llvm::StringRef(str).find("error:") == llvm::StringRef::npos) {
       llvm::errs() << "No error message on a failure!\n";
       return 1;
     }

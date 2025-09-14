@@ -22,27 +22,34 @@ import sys
 from pathlib import Path
 
 runfiles = Path(os.environ["TEST_SRCDIR"])
-deps_path = (
-    runfiles / "carbon" / "bazel" / "check_deps" / "non_test_cc_deps.txt"
-)
+deps_path = runfiles / "_main" / "bazel" / "check_deps" / "non_test_cc_deps.txt"
 try:
     with deps_path.open() as deps_file:
         deps = deps_file.read().splitlines()
 except FileNotFoundError:
     sys.exit("ERROR: unable to find deps file: %s" % deps_path)
 
+# This errors out on dependencies that aren't recognized, and continues on
+# allowed dependencies.
 for dep in deps:
     print("Checking dependency: " + dep)
     repo, _, rule = dep.partition("//")
-    if repo == "" and not rule.startswith("third_party"):
-        # Carbon code is always allowed.
-        continue
-    if repo == "@llvm-project":
+
+    if repo == "@@+llvm_project+llvm-project":
         package, _, rule = rule.partition(":")
 
         # Other packages in the LLVM project shouldn't be accidentally used
         # in Carbon. We can expand the above list if use cases emerge.
-        if package not in ("llvm", "lld", "clang"):
+        if package not in (
+            "llvm",
+            "lld",
+            "clang",
+            "clang-tools-extra/clangd",
+            "libunwind",
+            # While this is in a `third_party` directory, its code is documented
+            # as part of LLVM and for use in compiler-rt.
+            "third-party/siphash",
+        ):
             sys.exit(
                 "ERROR: unexpected dependency into the LLVM project: %s" % dep
             )
@@ -56,20 +63,32 @@ for dep in deps:
 
         # The rest of LLVM, LLD, and Clang themselves are safe to depend on.
         continue
-    if repo in ("@llvm_terminfo", "@llvm_zlib", "@llvm_zstd"):
-        # These are stubs wrapping system libraries for LLVM. They aren't
-        # distributed and so should be fine.
+
+    # Carbon code is always allowed.
+    if repo == "" and not rule.startswith("third_party"):
         continue
+
+    # Utility libraries provided by Bazel that are under a compatible license.
+    if repo in ("@@rules_cc+", "@@bazel_tools"):
+        continue
+
+    # These are stubs wrapping system libraries for LLVM. They aren't
+    # distributed and so should be fine.
     if repo in (
-        "@com_github_google_benchmark",
-        "@com_github_protocolbuffers_protobuf",
-        "@com_google_absl",
-        "@com_google_googletest",
+        "@@zlib+",
+        "@@zstd+",
     ):
-        # This should never be reached from non-test code, but these targets do
-        # exist. Specially diagnose them to try to provide a more helpful
-        # message.
+        continue
+
+    # This should never be reached from non-test code, but these targets do
+    # exist. Specially diagnose them to try to provide a more helpful
+    # message.
+    if repo in (
+        "@google_benchmark",
+        "@abseil-cpp",
+        "@googletest",
+    ):
         sys.exit("ERROR: dependency only allowed in test code: %s" % dep)
 
     # Conservatively fail if a dependency isn't explicitly allowed above.
-    sys.exit("ERROR: unknown dependency: %s" % dep)
+    sys.exit(f"ERROR: unknown dependency on {repo}: {dep}")

@@ -20,7 +20,7 @@ class NumericLiteral {
   enum class Radix : int8_t { Binary = 2, Decimal = 10, Hexadecimal = 16 };
 
   // Value of an integer literal.
-  struct IntegerValue {
+  struct IntValue {
     // An unsigned literal value.
     llvm::APInt value;
   };
@@ -37,19 +37,20 @@ class NumericLiteral {
 
   struct UnrecoverableError {};
 
-  using Value = std::variant<IntegerValue, RealValue, UnrecoverableError>;
+  using Value = std::variant<IntValue, RealValue, UnrecoverableError>;
 
   // Extract a numeric literal from the given text, if it has a suitable form.
   //
   // The supplied `source_text` must outlive the return value.
-  static auto Lex(llvm::StringRef source_text) -> std::optional<NumericLiteral>;
+  static auto Lex(llvm::StringRef source_text, bool can_form_real_literal)
+      -> std::optional<NumericLiteral>;
 
   // Compute the value of the token, if possible. Emit diagnostics to the given
   // emitter if the token is not valid.
-  auto ComputeValue(DiagnosticEmitter<const char*>& emitter) const -> Value;
+  auto ComputeValue(Diagnostics::Emitter<const char*>& emitter) const -> Value;
 
   // Get the text corresponding to this literal.
-  [[nodiscard]] auto text() const -> llvm::StringRef { return text_; }
+  auto text() const -> llvm::StringRef { return text_; }
 
  private:
   class Parser;

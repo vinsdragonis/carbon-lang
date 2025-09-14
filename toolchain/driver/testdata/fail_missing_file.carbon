@@ -2,7 +2,12 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// ARGS: compile nonexistent.carbon
+// ARGS: --include-diagnostic-kind compile not_file.carbon
 //
 // AUTOUPDATE
-// CHECK:STDERR: nonexistent.carbon: Error opening file for read: No such file or directory
+// TIP: To test this file alone, run:
+// TIP:   bazel test //toolchain/testing:file_test --test_arg=--file_tests=toolchain/driver/testdata/fail_missing_file.carbon
+// TIP: To dump output, run:
+// TIP:   bazel run //toolchain/testing:file_test -- --dump_output --file_tests=toolchain/driver/testdata/fail_missing_file.carbon
+// CHECK:STDERR: not_file.carbon: error: error opening file for read: No such file or directory [ErrorOpeningFile]
+// CHECK:STDERR:

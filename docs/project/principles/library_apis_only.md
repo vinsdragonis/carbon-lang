@@ -40,9 +40,9 @@ outside the common case.
 
 ## Principle
 
-In Carbon, every public function is declared in some Carbon `api` file, and
-every public `interface`, `impl`, and first-class type is defined in some Carbon
-`api` file. In some cases, the bodies of public functions will not be defined as
+In Carbon, every public function is declared in some Carbon API file, and every
+public `interface`, `impl`, and first-class type is defined in some Carbon API
+file. In some cases, the bodies of public functions will not be defined as
 Carbon code, or will be defined as hybrid Carbon code using intrinsics that
 aren't available to ordinary Carbon code. However, we will try to minimize those
 situations.
@@ -88,16 +88,12 @@ is more restricted, and this principle will not apply to them. Most importantly,
 function types might not be first-class types, in which case they need not be
 library types.
 
-The logic for translating a literal expression to a value of the appropriate
-type is arguably part of that type's public API, but will not be part of that
-type's class definition.
-
-Tuple types will probably not fully conform to this principle, because doing so
-would be circular: there is no way to name a tuple type that doesn't rely on
-tuple syntax, and no way to define a class body for a tuple type that doesn't
-contain tuple patterns. However, we will strive to ensure that it is possible to
-define a parameterized class type within Carbon that supports all the same
-operations as built-in tuple types.
+Some types (such as tuples, structs, and certain integer types) will have
+built-in literal syntaxes for creating values of those types. Furthermore, in
+some cases (such as tuples and structs) the type's literal syntax will also be
+usable as a pattern syntax. The logic for performing those operations is
+arguably part of those types' public API, but will not be part of those types'
+class definitions.
 
 ## Alternatives considered
 

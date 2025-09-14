@@ -2,49 +2,112 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+// Implementation-wise, this:
+//
+// - Uses the registered `FileTestFactory` to construct `FileTestBase`
+//   instances.
+// - Constructs a `FileTestCase` that wraps each `FileTestBase` instance to
+//   register with googletest, and to provide the actual `TestBody`.
+// - Using `FileTestEventListener`, runs tests in parallel prior to normal
+//   googletest execution.
+//   - This is required to support `--gtest_filter` and access `should_run`.
+//   - Runs each `FileTestBase` instance to cache the `TestFile` on
+//     `FileTestInfo`.
+//   - Determines whether autoupdate would make changes, autoupdating if
+//     requested.
+// - When googletest would normally execute the test, `FileTestCase::TestBody`
+//   instead uses the cached state on `FileTestInfo`.
+//   - This only occurs when neither autoupdating nor dumping output.
+
 #include "testing/file_test/file_test_base.h"
 
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
-#include <fstream>
+#include <functional>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
+#include "absl/strings/str_join.h"
+#include "common/build_data.h"
 #include "common/check.h"
+#include "common/error.h"
+#include "common/exe_path.h"
+#include "common/init_llvm.h"
+#include "common/raw_string_ostream.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/Twine.h"
+#include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/Process.h"
+#include "llvm/Support/ThreadPool.h"
 #include "testing/file_test/autoupdate.h"
+#include "testing/file_test/run_test.h"
+#include "testing/file_test/test_file.h"
 
 ABSL_FLAG(std::vector<std::string>, file_tests, {},
           "A comma-separated list of repo-relative names of test files. "
-          "Overrides test_targets_file.");
-ABSL_FLAG(std::string, test_targets_file, "",
-          "A path to a file containing repo-relative names of test files.");
+          "Similar to and overrides `--gtest_filter`, but doesn't require the "
+          "test class name to be known.");
 ABSL_FLAG(bool, autoupdate, false,
           "Instead of verifying files match test output, autoupdate files "
           "based on test output.");
+ABSL_FLAG(unsigned int, threads, 0,
+          "Number of threads to use when autoupdating tests, or 0 to "
+          "automatically determine a thread count.");
+ABSL_FLAG(bool, dump_output, false,
+          "Instead of verifying files match test output, directly dump output "
+          "to stderr.");
+ABSL_FLAG(int, print_slowest_tests, 5,
+          "The number of tests to print when showing slowest tests. Set to 0 "
+          "to disabling printing. Set to -1 to print all tests.");
 
 namespace Carbon::Testing {
 
-using ::testing::Eq;
-using ::testing::Matcher;
-using ::testing::MatchesRegex;
-using ::testing::StrEq;
+// Information for a test case.
+struct FileTestInfo {
+  // The name.
+  std::string test_name;
 
-// Reads a file to string.
-static auto ReadFile(std::string_view path) -> std::string {
-  std::ifstream proto_file(path);
-  std::stringstream buffer;
-  buffer << proto_file.rdbuf();
-  proto_file.close();
-  return buffer.str();
-}
+  // A factory function for creating the test object.
+  std::function<auto()->std::unique_ptr<FileTestBase>> factory_fn;
+
+  // gtest's information about the test.
+  ::testing::TestInfo* registered_test;
+
+  // The test result, set after running.
+  std::optional<ErrorOr<TestFile>> test_result;
+
+  // Whether running autoupdate would change (or when autoupdating, already
+  // changed) the test file. This may be true even if output passes test
+  // expectations.
+  bool autoupdate_differs = false;
+
+  // Time spent in the test total, including processing and autoupdate.
+  std::chrono::milliseconds elapsed_ms = std::chrono::milliseconds(0);
+};
+
+// Adapts a `FileTestBase` instance to gtest for outputting results.
+class FileTestCase : public testing::Test {
+ public:
+  explicit FileTestCase(FileTestInfo* test_info) : test_info_(test_info) {}
+
+  // Runs a test and compares output. This keeps output split by line so that
+  // issues are a little easier to identify by the different line.
+  auto TestBody() -> void final;
+
+ private:
+  FileTestInfo* test_info_;
+};
 
 // Splits outputs to string_view because gtest handles string_view by default.
 static auto SplitOutput(llvm::StringRef output)
@@ -57,501 +120,503 @@ static auto SplitOutput(llvm::StringRef output)
   return llvm::SmallVector<std::string_view>(lines.begin(), lines.end());
 }
 
-// Runs a test and compares output. This keeps output split by line so that
-// issues are a little easier to identify by the different line.
-auto FileTestBase::TestBody() -> void {
-  const char* target = getenv("TEST_TARGET");
-  CARBON_CHECK(target);
-  // This advice overrides the --file_tests flag provided by the file_test rule.
-  llvm::errs() << "\nTo test this file alone, run:\n  bazel test " << target
-               << " --test_arg=--file_tests=" << test_name_ << "\n\n";
-
-  // Add a crash trace entry with a command that runs this test in isolation.
-  llvm::PrettyStackTraceFormat stack_trace_entry(
-      "bazel test %s --test_arg=--file_tests=%s", target, test_name_);
-
-  TestContext context;
-  auto run_result = ProcessTestFileAndRun(context);
-  ASSERT_TRUE(run_result.ok()) << run_result.error();
-  ValidateRun();
-  auto test_filename = std::filesystem::path(test_name_.str()).filename();
-  EXPECT_THAT(!llvm::StringRef(test_filename).starts_with("fail_"),
-              Eq(context.exit_with_success))
-      << "Tests should be prefixed with `fail_` if and only if running them "
-         "is expected to fail.";
-
-  // Check results. Include a reminder of the autoupdate command for any
-  // stdout/stderr differences.
-  std::string update_message;
-  if (context.autoupdate_line_number) {
-    update_message = llvm::formatv(
-        "If these differences are expected, try the autoupdater:\n"
-        "\tbazel run {0} -- --autoupdate --file_tests={1}",
-        target, test_name_);
+// Verify that the success and `fail_` prefix use correspond. Separately handle
+// both cases for clearer test failures.
+static auto CompareFailPrefix(llvm::StringRef filename, bool success) -> void {
+  if (success) {
+    EXPECT_FALSE(filename.starts_with("fail_"))
+        << "`" << filename
+        << "` succeeded; if success is expected, remove the `fail_` "
+           "prefix.";
   } else {
-    update_message =
-        "If these differences are expected, content must be updated manually.";
-  }
-  SCOPED_TRACE(update_message);
-  if (context.check_subset) {
-    EXPECT_THAT(SplitOutput(context.stdout),
-                IsSupersetOf(context.expected_stdout));
-    EXPECT_THAT(SplitOutput(context.stderr),
-                IsSupersetOf(context.expected_stderr));
-
-  } else {
-    EXPECT_THAT(SplitOutput(context.stdout),
-                ElementsAreArray(context.expected_stdout));
-    EXPECT_THAT(SplitOutput(context.stderr),
-                ElementsAreArray(context.expected_stderr));
-  }
-
-  // If there are no other test failures, check if autoupdate would make
-  // changes. We don't do this when there _are_ failures because the
-  // SCOPED_TRACE already contains the autoupdate reminder.
-  if (!HasFailure() && RunAutoupdater(context, /*dry_run=*/true)) {
-    ADD_FAILURE() << "Autoupdate would make changes to the file content.";
+    EXPECT_TRUE(filename.starts_with("fail_"))
+        << "`" << filename
+        << "` failed; if failure is expected, add the `fail_` prefix.";
   }
 }
 
-auto FileTestBase::RunAutoupdater(const TestContext& context, bool dry_run)
-    -> bool {
-  if (!context.autoupdate_line_number) {
+// Returns the requested bazel command string for the given execution mode.
+auto FileTestBase::GetBazelCommand(BazelMode mode) -> std::string {
+  RawStringOstream args;
+  args << "bazel " << ((mode == BazelMode::Test) ? "test" : "run") << " "
+       << BuildData::TargetName << " ";
+
+  switch (mode) {
+    case BazelMode::Autoupdate:
+      args << "-- --autoupdate ";
+      break;
+
+    case BazelMode::Dump:
+      args << "-- --dump_output ";
+      break;
+
+    case BazelMode::Test:
+      args << "--test_arg=";
+      break;
+  }
+
+  args << "--file_tests=";
+  args << test_name();
+  return args.TakeStr();
+}
+
+// Runs the FileTestAutoupdater, returning the result.
+static auto RunAutoupdater(FileTestBase* test_base, const TestFile& test_file,
+                           bool dry_run) -> bool {
+  if (!test_file.autoupdate_line_number) {
     return false;
   }
 
   llvm::SmallVector<llvm::StringRef> filenames;
-  filenames.reserve(context.non_check_lines.size());
-  if (context.has_splits) {
+  filenames.reserve(test_file.non_check_lines.size());
+  if (test_file.has_splits) {
     // There are splits, so we provide an empty name for the first file.
     filenames.push_back({});
   }
-  for (const auto& file : context.test_files) {
+  for (const auto& file : test_file.file_splits) {
     filenames.push_back(file.filename);
   }
 
   llvm::ArrayRef expected_filenames = filenames;
   if (filenames.size() > 1) {
-    expected_filenames = expected_filenames.drop_front();
+    expected_filenames.consume_front();
   }
 
   return FileTestAutoupdater(
-             std::filesystem::absolute(test_name_.str()), context.input_content,
-             filenames, *context.autoupdate_line_number,
-             context.non_check_lines, context.stdout, context.stderr,
-             GetDefaultFileRE(expected_filenames),
-             GetLineNumberReplacements(expected_filenames),
-             [&](std::string& line) { DoExtraCheckReplacements(line); })
+             std::filesystem::absolute(test_base->test_name().str()),
+             test_base->GetBazelCommand(FileTestBase::BazelMode::Test),
+             test_base->GetBazelCommand(FileTestBase::BazelMode::Dump),
+             test_file.input_content, filenames,
+             *test_file.autoupdate_line_number, test_file.autoupdate_split,
+             test_file.non_check_lines, test_file.actual_stdout,
+             test_file.actual_stderr,
+             test_base->GetDefaultFileRE(expected_filenames),
+             test_base->GetLineNumberReplacements(expected_filenames),
+             [&](std::string& line) {
+               test_base->DoExtraCheckReplacements(line);
+             },
+             [&](FileTestBase::CheckLineArray& lines, bool is_stderr) {
+               test_base->FinalizeCheckLines(lines, is_stderr);
+             })
       .Run(dry_run);
 }
 
-auto FileTestBase::Autoupdate() -> ErrorOr<bool> {
-  // Add a crash trace entry mentioning which file we're updating.
-  llvm::PrettyStackTraceFormat stack_trace_entry("performing autoupdate for %s",
-                                                 test_name_);
-
-  TestContext context;
-  auto run_result = ProcessTestFileAndRun(context);
-  if (!run_result.ok()) {
-    return ErrorBuilder() << "Error updating " << test_name_ << ": "
-                          << run_result.error();
+auto FileTestCase::TestBody() -> void {
+  if (absl::GetFlag(FLAGS_autoupdate) || absl::GetFlag(FLAGS_dump_output)) {
+    return;
   }
-  return RunAutoupdater(context, /*dry_run=*/false);
+
+  CARBON_CHECK(test_info_->test_result,
+               "Expected test to be run prior to TestBody: {0}",
+               test_info_->test_name);
+
+  ASSERT_TRUE(test_info_->test_result->ok())
+      << test_info_->test_result->error();
+  auto test_filename = std::filesystem::path(test_info_->test_name).filename();
+
+  // Check success/failure against `fail_` prefixes.
+  TestFile& test_file = **(test_info_->test_result);
+  if (test_file.run_result.per_file_success.empty()) {
+    CompareFailPrefix(test_filename.string(), test_file.run_result.success);
+  } else {
+    bool require_overall_failure = false;
+    for (const auto& [filename, success] :
+         test_file.run_result.per_file_success) {
+      CompareFailPrefix(filename, success);
+      if (!success) {
+        require_overall_failure = true;
+      }
+    }
+
+    if (require_overall_failure) {
+      EXPECT_FALSE(test_file.run_result.success)
+          << "There is a per-file failure expectation, so the overall result "
+             "should have been a failure.";
+    } else {
+      // Individual files all succeeded, so the prefix is enforced on the main
+      // test file.
+      CompareFailPrefix(test_filename.string(), test_file.run_result.success);
+    }
+  }
+
+  // Check results. Include a reminder for NOAUTOUPDATE tests.
+  std::unique_ptr<testing::ScopedTrace> scoped_trace;
+  if (!test_file.autoupdate_line_number) {
+    scoped_trace = std::make_unique<testing::ScopedTrace>(
+        __FILE__, __LINE__,
+        "This file is NOAUTOUPDATE, so expected differences require manual "
+        "updates.");
+  }
+  if (test_file.check_subset) {
+    EXPECT_THAT(SplitOutput(test_file.actual_stdout),
+                IsSupersetOf(test_file.expected_stdout))
+        << "Actual text:\n"
+        << test_file.actual_stdout;
+    EXPECT_THAT(SplitOutput(test_file.actual_stderr),
+                IsSupersetOf(test_file.expected_stderr))
+        << "Actual text:\n"
+        << test_file.actual_stderr;
+
+  } else {
+    EXPECT_THAT(SplitOutput(test_file.actual_stdout),
+                ElementsAreArray(test_file.expected_stdout))
+        << "Actual text:\n"
+        << test_file.actual_stdout;
+    EXPECT_THAT(SplitOutput(test_file.actual_stderr),
+                ElementsAreArray(test_file.expected_stderr))
+        << "Actual text:\n"
+        << test_file.actual_stderr;
+  }
+
+  if (HasFailure()) {
+    llvm::errs() << "\nTo test this file alone, run:\n  "
+                 << test_info_->factory_fn()->GetBazelCommand(
+                        FileTestBase::BazelMode::Test)
+                 << "\n\n";
+    if (!test_file.autoupdate_line_number) {
+      llvm::errs() << "\nThis test is NOAUTOUPDATE.\n\n";
+    }
+  }
+  if (test_info_->autoupdate_differs) {
+    ADD_FAILURE() << "Autoupdate would make changes to the file content. Run:\n"
+                  << test_info_->factory_fn()->GetBazelCommand(
+                         FileTestBase::BazelMode::Autoupdate);
+  }
 }
 
 auto FileTestBase::GetLineNumberReplacements(
-    llvm::ArrayRef<llvm::StringRef> filenames)
+    llvm::ArrayRef<llvm::StringRef> filenames) const
     -> llvm::SmallVector<LineNumberReplacement> {
   return {{.has_file = true,
            .re = std::make_shared<RE2>(
-               llvm::formatv(R"(({0}):(\d+))", llvm::join(filenames, "|"))),
+               llvm::formatv(R"(({0}):(\d+)?)", llvm::join(filenames, "|"))),
            .line_formatv = R"({0})"}};
 }
 
-auto FileTestBase::ProcessTestFileAndRun(TestContext& context)
+// If `--file_tests` is set, transform it into a `--gtest_filter`.
+static auto MaybeApplyFileTestsFlag(llvm::StringRef factory_name) -> void {
+  if (absl::GetFlag(FLAGS_file_tests).empty()) {
+    return;
+  }
+  RawStringOstream filter;
+  llvm::ListSeparator sep(":");
+  for (const auto& file : absl::GetFlag(FLAGS_file_tests)) {
+    filter << sep << factory_name << "." << file;
+  }
+  absl::SetFlag(&FLAGS_gtest_filter, filter.TakeStr());
+}
+
+// Loads tests from the manifest file, and registers them for execution. The
+// vector is taken as an output parameter so that the address of entries is
+// stable for the factory.
+static auto RegisterTests(FileTestFactory* test_factory,
+                          llvm::StringRef exe_path,
+                          llvm::SmallVectorImpl<FileTestInfo>& tests)
     -> ErrorOr<Success> {
-  // Store the file so that test_files can use references to content.
-  context.input_content = ReadFile(test_name_);
+  // Prepare the vector first, so that the location of entries won't change.
+  for (auto& test_name : GetFileTestManifest()) {
+    tests.push_back({.test_name = test_name});
+  }
+
+  // Amend entries with factory functions.
+  for (auto& test : tests) {
+    const std::string& test_name = test.test_name;
+    test.factory_fn = [test_factory, exe_path, &test_name]() {
+      return test_factory->factory_fn(exe_path, test_name);
+    };
+    test.registered_test = testing::RegisterTest(
+        test_factory->name, test_name.c_str(), nullptr, test_name.c_str(),
+        __FILE__, __LINE__, [&test]() { return new FileTestCase(&test); });
+  }
+  return Success();
+}
+
+// Implements the parallel test execution through gtest's listener support.
+class FileTestEventListener : public testing::EmptyTestEventListener {
+ public:
+  explicit FileTestEventListener(llvm::MutableArrayRef<FileTestInfo> tests)
+      : tests_(tests) {}
+
+  // Runs test during start, after `should_run` is initialized. This is
+  // multi-threaded to get extra speed.
+  auto OnTestProgramStart(const testing::UnitTest& /*unit_test*/)
+      -> void override;
+
+ private:
+  llvm::MutableArrayRef<FileTestInfo> tests_;
+};
+
+// Returns true if the main thread should be used to run tests. This is if
+// either --dump_output is specified, or only 1 thread is needed to run tests.
+static auto SingleThreaded(llvm::ArrayRef<FileTestInfo> tests) -> bool {
+  if (absl::GetFlag(FLAGS_dump_output) || absl::GetFlag(FLAGS_threads) == 1) {
+    return true;
+  }
+
+  bool found_test_to_run = false;
+  for (const auto& test : tests) {
+    if (!test.registered_test->should_run()) {
+      continue;
+    }
+    if (found_test_to_run) {
+      // At least two tests will run, so multi-threaded.
+      return false;
+    }
+    // Found the first test to run.
+    found_test_to_run = true;
+  }
+  // 0 or 1 test will be run, so single-threaded.
+  return true;
+}
+
+// Runs the test in the section that would be inside a lock, possibly inside a
+// CrashRecoveryContext.
+static auto RunSingleTestHelper(FileTestInfo& test, FileTestBase& test_instance)
+    -> void {
+  Timer timer;
+  // Add a crash trace entry with the single-file test command.
+  std::string test_command =
+      test_instance.GetBazelCommand(FileTestBase::BazelMode::Test);
+  llvm::PrettyStackTraceString stack_trace_entry(test_command.c_str());
+
+  if (auto err = RunTestFile(test_instance, absl::GetFlag(FLAGS_dump_output),
+                             **test.test_result);
+      !err.ok()) {
+    test.test_result = std::move(err).error();
+  }
+  test.elapsed_ms += timer.elapsed_ms();
+}
+
+// Runs a single test. Uses a CrashRecoveryContext, and returns false on a
+// crash. For test_elapsed_ms, try to exclude time spent waiting on
+// output_mutex.
+static auto RunSingleTest(FileTestInfo& test, bool single_threaded,
+                          std::mutex& output_mutex) -> bool {
+  std::unique_ptr<FileTestBase> test_instance(test.factory_fn());
+
+  if (absl::GetFlag(FLAGS_dump_output)) {
+    std::unique_lock<std::mutex> lock(output_mutex);
+    llvm::errs() << "\n--- Dumping: " << test.test_name << "\n\n";
+  } else if (single_threaded) {
+    std::unique_lock<std::mutex> lock(output_mutex);
+    llvm::errs() << "\nTEST: " << test.test_name << ' ';
+  }
 
   // Load expected output.
-  CARBON_RETURN_IF_ERROR(ProcessTestFile(context));
+  Timer process_timer;
+  test.test_result = ProcessTestFile(test_instance->test_name(),
+                                     absl::GetFlag(FLAGS_autoupdate));
+  test.elapsed_ms = process_timer.elapsed_ms();
 
-  // Process arguments.
-  if (context.test_args.empty()) {
-    context.test_args = GetDefaultArgs();
-  }
-  CARBON_RETURN_IF_ERROR(
-      DoArgReplacements(context.test_args, context.test_files));
+  if (test.test_result->ok()) {
+    // Execution must be serialized for either serial tests or console
+    // output.
+    std::unique_lock<std::mutex> output_lock;
 
-  // Create the files in-memory.
-  llvm::vfs::InMemoryFileSystem fs;
-  for (const auto& test_file : context.test_files) {
-    if (!fs.addFile(test_file.filename, /*ModificationTime=*/0,
-                    llvm::MemoryBuffer::getMemBuffer(
-                        test_file.content, test_file.filename,
-                        /*RequiresNullTerminator=*/false))) {
-      return ErrorBuilder() << "File is repeated: " << test_file.filename;
-    }
-  }
-
-  // Convert the arguments to StringRef and const char* to match the
-  // expectations of PrettyStackTraceProgram and Run.
-  llvm::SmallVector<llvm::StringRef> test_args_ref;
-  llvm::SmallVector<const char*> test_argv_for_stack_trace;
-  test_args_ref.reserve(context.test_args.size());
-  test_argv_for_stack_trace.reserve(context.test_args.size() + 1);
-  for (const auto& arg : context.test_args) {
-    test_args_ref.push_back(arg);
-    test_argv_for_stack_trace.push_back(arg.c_str());
-  }
-  // Add a trailing null so that this is a proper argv.
-  test_argv_for_stack_trace.push_back(nullptr);
-
-  // Add a stack trace entry for the test invocation.
-  llvm::PrettyStackTraceProgram stack_trace_entry(
-      test_argv_for_stack_trace.size(), test_argv_for_stack_trace.data());
-
-  // Capture trace streaming, but only when in debug mode.
-  llvm::raw_svector_ostream stdout(context.stdout);
-  llvm::raw_svector_ostream stderr(context.stderr);
-  CARBON_ASSIGN_OR_RETURN(context.exit_with_success,
-                          Run(test_args_ref, fs, stdout, stderr));
-  return Success();
-}
-
-auto FileTestBase::DoArgReplacements(
-    llvm::SmallVector<std::string>& test_args,
-    const llvm::SmallVector<TestFile>& test_files) -> ErrorOr<Success> {
-  for (auto* it = test_args.begin(); it != test_args.end(); ++it) {
-    auto percent = it->find("%");
-    if (percent == std::string::npos) {
-      continue;
+    if ((*test.test_result)->capture_console_output ||
+        !test_instance->AllowParallelRun()) {
+      output_lock = std::unique_lock<std::mutex>(output_mutex);
     }
 
-    if (percent + 1 >= it->size()) {
-      return ErrorBuilder() << "% is not allowed on its own: " << *it;
-    }
-    char c = (*it)[percent + 1];
-    switch (c) {
-      case 's': {
-        if (*it != "%s") {
-          return ErrorBuilder() << "%s must be the full argument: " << *it;
-        }
-        it = test_args.erase(it);
-        for (const auto& file : test_files) {
-          it = test_args.insert(it, file.filename);
-          ++it;
-        }
-        // Back up once because the for loop will advance.
-        --it;
-        break;
-      }
-      case 't': {
-        char* tmpdir = getenv("TEST_TMPDIR");
-        CARBON_CHECK(tmpdir != nullptr);
-        it->replace(percent, 2, llvm::formatv("{0}/temp_file", tmpdir));
-        break;
-      }
-      default:
-        return ErrorBuilder() << "%" << c << " is not supported: " << *it;
-    }
-  }
-  return Success();
-}
-
-auto FileTestBase::ProcessTestFile(TestContext& context) -> ErrorOr<Success> {
-  // Original file content, and a cursor for walking through it.
-  llvm::StringRef file_content = context.input_content;
-  llvm::StringRef cursor = file_content;
-
-  // Whether content has been found, only updated before a file split is found
-  // (which may be never).
-  bool found_content_pre_split = false;
-
-  // Whether either AUTOUDPATE or NOAUTOUPDATE was found.
-  bool found_autoupdate = false;
-
-  // The index in the current test file. Will be reset on splits.
-  int line_index = 0;
-
-  // The current file name, considering splits. Not set for the default file.
-  llvm::StringRef current_file_name;
-
-  // The current file's start.
-  const char* current_file_start = nullptr;
-
-  int file_number = 0;
-  while (!cursor.empty()) {
-    auto [line, next_cursor] = cursor.split("\n");
-    cursor = next_cursor;
-    auto line_trimmed = line.ltrim();
-
-    static constexpr llvm::StringLiteral SplitPrefix = "// ---";
-    if (line_trimmed.consume_front(SplitPrefix)) {
-      if (!found_autoupdate) {
-        // If there's a split, all output is appended at the end of each file
-        // before AUTOUPDATE. We may want to change that, but it's not necessary
-        // to handle right now.
-        return ErrorBuilder()
-               << "AUTOUPDATE/NOAUTOUPDATE setting must be in the first file.";
-      }
-
-      context.has_splits = true;
-      ++file_number;
-      context.non_check_lines.push_back(FileTestLine(file_number, 0, line));
-      // On a file split, add the previous file, then start a new one.
-      if (current_file_start) {
-        context.test_files.push_back(TestFile(
-            current_file_name.str(),
-            llvm::StringRef(current_file_start, line_trimmed.begin() -
-                                                    current_file_start -
-                                                    SplitPrefix.size())));
-      } else if (found_content_pre_split) {
-        // For the first split, we make sure there was no content prior.
-        return ErrorBuilder()
-               << "When using split files, there must be no content before the "
-                  "first split file.";
-      }
-      current_file_name = line_trimmed.trim();
-      current_file_start = cursor.begin();
-      line_index = 0;
-      continue;
-    } else if (!current_file_start && !line_trimmed.starts_with("//") &&
-               !line_trimmed.empty()) {
-      found_content_pre_split = true;
-    }
-    ++line_index;
-
-    // Process expectations when found.
-    if (line_trimmed.consume_front("// CHECK")) {
-      // Don't build expectations when doing an autoupdate. We don't want to
-      // break the autoupdate on an invalid CHECK line.
-      if (!absl::GetFlag(FLAGS_autoupdate)) {
-        llvm::SmallVector<Matcher<std::string>>* expected = nullptr;
-        if (line_trimmed.consume_front(":STDOUT:")) {
-          expected = &context.expected_stdout;
-        } else if (line_trimmed.consume_front(":STDERR:")) {
-          expected = &context.expected_stderr;
-        } else {
-          return ErrorBuilder() << "Unexpected CHECK in input: " << line.str();
-        }
-        CARBON_ASSIGN_OR_RETURN(Matcher<std::string> check_matcher,
-                                TransformExpectation(line_index, line_trimmed));
-        expected->push_back(check_matcher);
-      }
+    if (single_threaded) {
+      RunSingleTestHelper(test, *test_instance);
     } else {
-      context.non_check_lines.push_back(
-          FileTestLine(file_number, line_index, line));
-      if (line_trimmed.consume_front("// ARGS: ")) {
-        if (context.test_args.empty()) {
-          // Split the line into arguments.
-          std::pair<llvm::StringRef, llvm::StringRef> cursor =
-              llvm::getToken(line_trimmed);
-          while (!cursor.first.empty()) {
-            context.test_args.push_back(std::string(cursor.first));
-            cursor = llvm::getToken(cursor.second);
-          }
-        } else {
-          return ErrorBuilder()
-                 << "ARGS was specified multiple times: " << line.str();
-        }
-      } else if (line_trimmed == "// AUTOUPDATE" ||
-                 line_trimmed == "// NOAUTOUPDATE") {
-        if (found_autoupdate) {
-          return ErrorBuilder()
-                 << "Multiple AUTOUPDATE/NOAUTOUPDATE settings found";
-        }
-        found_autoupdate = true;
-        if (line_trimmed == "// AUTOUPDATE") {
-          context.autoupdate_line_number = line_index;
-        }
-      } else if (line_trimmed == "// SET-CHECK-SUBSET") {
-        if (!context.check_subset) {
-          context.check_subset = true;
-        } else {
-          return ErrorBuilder()
-                 << "SET-CHECK-SUBSET was specified multiple times";
-        }
+      // Use a crash recovery context to try to get a stack trace when
+      // multiple threads may crash in parallel, which otherwise leads to the
+      // program aborting without printing a stack trace.
+      llvm::CrashRecoveryContext crc;
+      crc.DumpStackAndCleanupOnFailure = true;
+      if (!crc.RunSafely([&] { RunSingleTestHelper(test, *test_instance); })) {
+        return false;
       }
     }
   }
 
-  if (!found_autoupdate) {
-    return ErrorBuilder() << "Missing AUTOUPDATE/NOAUTOUPDATE setting";
+  if (!test.test_result->ok()) {
+    std::unique_lock<std::mutex> lock(output_mutex);
+    if (!single_threaded) {
+      llvm::errs() << "\n" << test.test_name << ": ";
+    }
+    llvm::errs() << test.test_result->error().message() << "\n";
+    return true;
   }
 
-  if (current_file_start) {
-    context.test_files.push_back(
-        TestFile(current_file_name.str(),
-                 llvm::StringRef(current_file_start,
-                                 file_content.end() - current_file_start)));
+  Timer autoupdate_timer;
+  test.autoupdate_differs =
+      RunAutoupdater(test_instance.get(), **test.test_result,
+                     /*dry_run=*/!absl::GetFlag(FLAGS_autoupdate));
+  test.elapsed_ms += autoupdate_timer.elapsed_ms();
+
+  std::unique_lock<std::mutex> lock(output_mutex);
+  if (absl::GetFlag(FLAGS_dump_output)) {
+    llvm::outs().flush();
+    const TestFile& test_file = **test.test_result;
+    llvm::errs() << "\n--- Exit with success: "
+                 << (test_file.run_result.success ? "true" : "false")
+                 << "\n--- Autoupdate differs: "
+                 << (test.autoupdate_differs ? "true" : "false") << "\n";
   } else {
-    // If no file splitting happened, use the main file as the test file.
-    // There will always be a `/` unless tests are in the repo root.
-    context.test_files.push_back(TestFile(
-        test_name_.drop_front(test_name_.rfind("/") + 1).str(), file_content));
+    llvm::errs() << (test.autoupdate_differs ? "!" : ".");
   }
 
-  // Assume there is always a suffix `\n` in output.
-  if (!context.expected_stdout.empty()) {
-    context.expected_stdout.push_back(StrEq(""));
-  }
-  if (!context.expected_stderr.empty()) {
-    context.expected_stderr.push_back(StrEq(""));
-  }
-
-  return Success();
+  return true;
 }
 
-auto FileTestBase::TransformExpectation(int line_index, llvm::StringRef in)
-    -> ErrorOr<Matcher<std::string>> {
-  if (in.empty()) {
-    return Matcher<std::string>{StrEq("")};
+auto FileTestEventListener::OnTestProgramStart(
+    const testing::UnitTest& /*unit_test*/) -> void {
+  bool single_threaded = SingleThreaded(tests_);
+
+  std::unique_ptr<llvm::ThreadPoolInterface> pool;
+  if (single_threaded) {
+    pool = std::make_unique<llvm::SingleThreadExecutor>();
+  } else {
+    // Enable the CRC for use in `RunSingleTest`.
+    llvm::CrashRecoveryContext::Enable();
+    llvm::ThreadPoolStrategy thread_strategy = {
+        .ThreadsRequested = absl::GetFlag(FLAGS_threads),
+        // Disable hyper threads to reduce contention.
+        .UseHyperThreads = false};
+    pool = std::make_unique<llvm::DefaultThreadPool>(thread_strategy);
   }
-  if (in[0] != ' ') {
-    return ErrorBuilder() << "Malformated CHECK line: " << in;
-  }
-  std::string str = in.substr(1).str();
-  for (int pos = 0; pos < static_cast<int>(str.size());) {
-    switch (str[pos]) {
-      case '(':
-      case ')':
-      case ']':
-      case '}':
-      case '.':
-      case '^':
-      case '$':
-      case '*':
-      case '+':
-      case '?':
-      case '|':
-      case '\\': {
-        // Escape regex characters.
-        str.insert(pos, "\\");
-        pos += 2;
-        break;
-      }
-      case '[': {
-        llvm::StringRef line_keyword_cursor = llvm::StringRef(str).substr(pos);
-        if (line_keyword_cursor.consume_front("[[")) {
-          static constexpr llvm::StringLiteral LineKeyword = "@LINE";
-          if (line_keyword_cursor.consume_front(LineKeyword)) {
-            // Allow + or - here; consumeInteger handles -.
-            line_keyword_cursor.consume_front("+");
-            int offset;
-            // consumeInteger returns true for errors, not false.
-            if (line_keyword_cursor.consumeInteger(10, offset) ||
-                !line_keyword_cursor.consume_front("]]")) {
-              return ErrorBuilder()
-                     << "Unexpected @LINE offset at `"
-                     << line_keyword_cursor.substr(0, 5) << "` in: " << in;
-            }
-            std::string int_str = llvm::Twine(line_index + offset).str();
-            int remove_len = (line_keyword_cursor.data() - str.data()) - pos;
-            str.replace(pos, remove_len, int_str);
-            pos += int_str.size();
-          } else {
-            return ErrorBuilder()
-                   << "Unexpected [[, should be {{\\[\\[}} at `"
-                   << line_keyword_cursor.substr(0, 5) << "` in: " << in;
-          }
-        } else {
-          // Escape the `[`.
-          str.insert(pos, "\\");
-          pos += 2;
-        }
-        break;
-      }
-      case '{': {
-        if (pos + 1 == static_cast<int>(str.size()) || str[pos + 1] != '{') {
-          // Single `{`, escape it.
-          str.insert(pos, "\\");
-          pos += 2;
-        } else {
-          // Replace the `{{...}}` regex syntax with standard `(...)` syntax.
-          str.replace(pos, 2, "(");
-          for (++pos; pos < static_cast<int>(str.size() - 1); ++pos) {
-            if (str[pos] == '}' && str[pos + 1] == '}') {
-              str.replace(pos, 2, ")");
-              ++pos;
-              break;
-            }
-          }
-        }
-        break;
-      }
-      default: {
-        ++pos;
-      }
-    }
+  if (!absl::GetFlag(FLAGS_dump_output)) {
+    llvm::errs() << "Running tests with " << pool->getMaxConcurrency()
+                 << " thread(s)\n";
   }
 
-  return Matcher<std::string>{MatchesRegex(str)};
-}
+  // Guard access to output (stdout and stderr).
+  std::mutex output_mutex;
 
-// Returns the tests to run.
-static auto GetTests() -> llvm::SmallVector<std::string> {
-  // Prefer a user-specified list if present.
-  auto specific_tests = absl::GetFlag(FLAGS_file_tests);
-  if (!specific_tests.empty()) {
-    return llvm::SmallVector<std::string>(specific_tests.begin(),
-                                          specific_tests.end());
-  }
-
-  // Extracts tests from the target file.
-  CARBON_CHECK(!absl::GetFlag(FLAGS_test_targets_file).empty())
-      << "Missing --test_targets_file.";
-  auto content = ReadFile(absl::GetFlag(FLAGS_test_targets_file));
-  llvm::SmallVector<std::string> all_tests;
-  for (llvm::StringRef file_ref : llvm::split(content, "\n")) {
-    if (file_ref.empty()) {
+  std::atomic<bool> crashed = false;
+  Timer all_timer;
+  int run_count = 0;
+  for (auto& test : tests_) {
+    if (!test.registered_test->should_run()) {
       continue;
     }
-    all_tests.push_back(file_ref.str());
+    ++run_count;
+
+    pool->async([&] {
+      // If any thread crashed, don't try running more.
+      if (crashed) {
+        return;
+      }
+
+      if (!RunSingleTest(test, single_threaded, output_mutex)) {
+        crashed = true;
+      }
+    });
   }
-  return all_tests;
+
+  pool->wait();
+  if (crashed) {
+    // Abort rather than returning so that we don't get a LeakSanitizer report.
+    // We expect to have leaked memory if one or more of our tests crashed.
+    std::abort();
+  }
+
+  // Calculate the total test time.
+  auto all_elapsed_ms = all_timer.elapsed_ms();
+  auto total_elapsed_ms = std::chrono::milliseconds(0);
+  for (auto& test : tests_) {
+    total_elapsed_ms += test.elapsed_ms;
+  }
+
+  llvm::errs() << "\nRan " << run_count << " tests in "
+               << all_elapsed_ms.count() << " ms wall time, "
+               << total_elapsed_ms.count() << " ms across threads\n";
+
+  // When there are multiple tests, give additional timing details, particularly
+  // slowest tests.
+  auto print_slowest_tests = absl::GetFlag(FLAGS_print_slowest_tests);
+  if (run_count > 1 && print_slowest_tests != 0) {
+    // Sort in a copy so that `FileTestCase` pointers to the original tests
+    // remain stable.
+    llvm::SmallVector<const FileTestInfo*> sorted_tests(
+        llvm::make_pointer_range(tests_));
+    llvm::sort(sorted_tests,
+               [](const FileTestInfo* lhs, const FileTestInfo* rhs) {
+                 return lhs->elapsed_ms > rhs->elapsed_ms;
+               });
+
+    llvm::errs() << "  Slowest tests:\n";
+    int count = print_slowest_tests > 0 ? print_slowest_tests : run_count;
+    for (const auto* test : llvm::ArrayRef(sorted_tests).take_front(count)) {
+      std::chrono::milliseconds run_ms(0);
+      if (test->test_result && test->test_result->ok()) {
+        run_ms = test->test_result.value()->run_elapsed_ms;
+      }
+      llvm::errs() << "  - " << test->test_name << ": "
+                   << test->elapsed_ms.count() << " ms, " << run_ms.count()
+                   << " ms in Run\n";
+    }
+  }
 }
 
 // Implements main() within the Carbon::Testing namespace for convenience.
-static auto Main(int argc, char** argv) -> int {
-  absl::ParseCommandLine(argc, argv);
+static auto Main(int argc, char** argv) -> ErrorOr<int> {
+  // Default to brief because we expect lots of tests, and `FileTestBase`
+  // provides some summaries. Note `--test_arg=--gtest_brief=0` works to restore
+  // output.
+  absl::SetFlag(&FLAGS_gtest_brief, 1);
+
+  Carbon::InitLLVM init_llvm(argc, argv);
   testing::InitGoogleTest(&argc, argv);
-  llvm::setBugReportMsg(
-      "Please report issues to "
-      "https://github.com/carbon-language/carbon-lang/issues and include the "
-      "crash backtrace.\n");
-  llvm::InitLLVM init_llvm(argc, argv);
+  auto args = absl::ParseCommandLine(argc, argv);
 
-  if (argc > 1) {
-    llvm::errs() << "Unexpected arguments starting at: " << argv[1] << "\n";
-    return EXIT_FAILURE;
+  if (args.size() > 1) {
+    ErrorBuilder b;
+    b << "Unexpected arguments:";
+    for (char* arg : llvm::ArrayRef(args).drop_front()) {
+      b << " " << FormatEscaped(arg);
+    }
+    return b;
   }
 
-  llvm::SmallVector<std::string> tests = GetTests();
+  std::string exe_path = FindExecutablePath(argv[0]);
+
+  // Tests might try to read from stdin. Ensure those reads fail by closing
+  // stdin and reopening it as /dev/null. Note that STDIN_FILENO doesn't exist
+  // on Windows, but POSIX requires it to be 0.
+  if (std::error_code error =
+          llvm::sys::Process::SafelyCloseFileDescriptor(0)) {
+    return Error("Unable to close standard input: " + error.message());
+  }
+  if (std::error_code error =
+          llvm::sys::Process::FixupStandardFileDescriptors()) {
+    return Error("Unable to correct standard file descriptors: " +
+                 error.message());
+  }
+  if (absl::GetFlag(FLAGS_autoupdate) && absl::GetFlag(FLAGS_dump_output)) {
+    return Error("--autoupdate and --dump_output are mutually exclusive.");
+  }
+
   auto test_factory = GetFileTestFactory();
-  if (absl::GetFlag(FLAGS_autoupdate)) {
-    for (const auto& test_name : tests) {
-      std::unique_ptr<FileTestBase> test(test_factory.factory_fn(test_name));
-      auto result = test->Autoupdate();
-      llvm::errs() << (result.ok() ? (*result ? "!" : ".")
-                                   : result.error().message());
-    }
-    llvm::errs() << "\nDone!\n";
-    return EXIT_SUCCESS;
-  } else {
-    for (llvm::StringRef test_name : tests) {
-      testing::RegisterTest(test_factory.name, test_name.data(), nullptr,
-                            test_name.data(), __FILE__, __LINE__,
-                            [&test_factory, test_name = test_name]() {
-                              return test_factory.factory_fn(test_name);
-                            });
-    }
-    return RUN_ALL_TESTS();
+
+  MaybeApplyFileTestsFlag(test_factory.name);
+
+  // Inline 0 entries because it will always be too large to store on the stack.
+  llvm::SmallVector<FileTestInfo, 0> tests;
+  CARBON_RETURN_IF_ERROR(RegisterTests(&test_factory, exe_path, tests));
+
+  testing::TestEventListeners& listeners =
+      testing::UnitTest::GetInstance()->listeners();
+  if (absl::GetFlag(FLAGS_autoupdate) || absl::GetFlag(FLAGS_dump_output)) {
+    // Suppress all of the default output.
+    delete listeners.Release(listeners.default_result_printer());
   }
+  // Use a listener to run tests in parallel.
+  listeners.Append(new FileTestEventListener(tests));
+
+  return RUN_ALL_TESTS();
 }
 
 }  // namespace Carbon::Testing
 
 auto main(int argc, char** argv) -> int {
-  return Carbon::Testing::Main(argc, argv);
+  if (auto result = Carbon::Testing::Main(argc, argv); result.ok()) {
+    return *result;
+  } else {
+    llvm::errs() << result.error() << "\n";
+    return EXIT_FAILURE;
+  }
 }

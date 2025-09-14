@@ -2,7 +2,10 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+#include <optional>
+
 #include "toolchain/parse/context.h"
+#include "toolchain/parse/handle.h"
 
 namespace Carbon::Parse {
 
@@ -11,40 +14,65 @@ auto HandleStatement(Context& context) -> void {
 
   switch (context.PositionKind()) {
     case Lex::TokenKind::Break: {
-      context.PushState(State::StatementBreakFinish);
+      context.PushState(StateKind::StatementBreakFinish);
       context.AddLeafNode(NodeKind::BreakStatementStart, context.Consume());
       break;
     }
     case Lex::TokenKind::Continue: {
-      context.PushState(State::StatementContinueFinish);
+      context.PushState(StateKind::StatementContinueFinish);
       context.AddLeafNode(NodeKind::ContinueStatementStart, context.Consume());
       break;
     }
     case Lex::TokenKind::For: {
-      context.PushState(State::StatementForFinish);
-      context.PushState(State::StatementForHeader);
-      ++context.position();
+      context.PushState(StateKind::StatementForFinish);
+      context.PushState(StateKind::StatementForHeader);
+      context.ConsumeAndDiscard();
       break;
     }
     case Lex::TokenKind::If: {
-      context.PushState(State::StatementIf);
+      context.PushState(StateKind::StatementIf);
       break;
     }
     case Lex::TokenKind::Return: {
-      context.PushState(State::StatementReturn);
+      context.PushState(StateKind::StatementReturn);
       break;
     }
-    case Lex::TokenKind::Var: {
-      context.PushState(State::VarAsSemicolon);
+    case Lex::TokenKind::Returned: {
+      // TODO: Consider handling this as a modifier.
+      context.PushState(StateKind::VarAsReturned);
       break;
     }
     case Lex::TokenKind::While: {
-      context.PushState(State::StatementWhile);
+      context.PushState(StateKind::StatementWhile);
+      break;
+    }
+    case Lex::TokenKind::Match: {
+      context.PushState(StateKind::MatchIntroducer);
+      break;
+    }
+#define CARBON_PARSE_NODE_KIND(Name)
+#define CARBON_PARSE_NODE_KIND_TOKEN_MODIFIER(Name) case Lex::TokenKind::Name:
+#include "toolchain/parse/node_kind.def"
+    case Lex::TokenKind::Adapt:
+    case Lex::TokenKind::Alias:
+    case Lex::TokenKind::Choice:
+    case Lex::TokenKind::Class:
+    case Lex::TokenKind::Constraint:
+    case Lex::TokenKind::Fn:
+    case Lex::TokenKind::Import:
+    case Lex::TokenKind::Interface:
+    case Lex::TokenKind::Let:
+    case Lex::TokenKind::Library:
+    case Lex::TokenKind::Namespace:
+    // We intentionally don't handle Package here, because `package.` can be
+    // used at the start of an expression, and it's not worth disambiguating it.
+    case Lex::TokenKind::Var: {
+      context.PushState(StateKind::DeclAsRegular);
       break;
     }
     default: {
-      context.PushState(State::ExpressionStatementFinish);
-      context.PushStateForExpression(PrecedenceGroup::ForExpressionStatement());
+      context.PushState(StateKind::ExprStatementFinish);
+      context.PushStateForExpr(PrecedenceGroup::ForExprStatement());
       break;
     }
   }
@@ -58,18 +86,14 @@ static auto HandleStatementKeywordFinish(Context& context, NodeKind node_kind)
   auto semi = context.ConsumeIf(Lex::TokenKind::Semi);
   if (!semi) {
     CARBON_DIAGNOSTIC(ExpectedStatementSemi, Error,
-                      "`{0}` statements must end with a `;`.", Lex::TokenKind);
+                      "`{0}` statements must end with a `;`", Lex::TokenKind);
     context.emitter().Emit(*context.position(), ExpectedStatementSemi,
                            context.tokens().GetKind(state.token));
     state.has_error = true;
-    // Recover to the next semicolon if possible, otherwise indicate the
-    // keyword for the error.
+    // Recover to the next semicolon if possible.
     semi = context.SkipPastLikelyEnd(state.token);
-    if (!semi) {
-      semi = state.token;
-    }
   }
-  context.AddNode(node_kind, *semi, state.subtree_start, state.has_error);
+  context.AddNode(node_kind, *semi, state.has_error);
 }
 
 auto HandleStatementBreakFinish(Context& context) -> void {
@@ -83,36 +107,50 @@ auto HandleStatementContinueFinish(Context& context) -> void {
 auto HandleStatementForHeader(Context& context) -> void {
   auto state = context.PopState();
 
-  std::optional<Lex::Token> open_paren =
+  std::optional<Lex::TokenIndex> open_paren =
       context.ConsumeAndAddOpenParen(state.token, NodeKind::ForHeaderStart);
   if (open_paren) {
     state.token = *open_paren;
   }
-  state.state = State::StatementForHeaderIn;
 
-  if (context.PositionIs(Lex::TokenKind::Var)) {
-    context.PushState(state);
-    context.PushState(State::VarAsFor);
-  } else {
-    CARBON_DIAGNOSTIC(ExpectedVariableDeclaration, Error,
-                      "Expected `var` declaration.");
-    context.emitter().Emit(*context.position(), ExpectedVariableDeclaration);
-
-    if (auto next_in = context.FindNextOf({Lex::TokenKind::In})) {
-      context.SkipTo(*next_in);
-      ++context.position();
-    }
-    state.has_error = true;
-    context.PushState(state);
-  }
+  state.kind = StateKind::StatementForHeaderIn;
+  context.PushState(state);
+  context.PushState(StateKind::Pattern);
 }
 
 auto HandleStatementForHeaderIn(Context& context) -> void {
   auto state = context.PopState();
 
-  state.state = State::StatementForHeaderFinish;
-  context.PushState(state);
-  context.PushState(State::Expression);
+  auto end_token = state.token;
+  if (context.PositionIs(Lex::TokenKind::In)) {
+    end_token = context.Consume();
+  } else if (context.PositionIs(Lex::TokenKind::Colon)) {
+    CARBON_DIAGNOSTIC(ExpectedInNotColon, Error,
+                      "`:` should be replaced by `in`");
+    context.emitter().Emit(*context.position(), ExpectedInNotColon);
+    state.has_error = true;
+    end_token = context.Consume();
+  } else if (!state.has_error) {
+    CARBON_DIAGNOSTIC(ExpectedIn, Error, "expected `in` after loop pattern");
+    context.emitter().Emit(*context.position(), ExpectedIn);
+    state.has_error = true;
+  }
+
+  context.AddNode(NodeKind::ForIn, end_token, state.has_error);
+
+  context.PushState(state, StateKind::StatementForHeaderFinish);
+
+  // If we had a parse error, try to skip to the closing paren rather than
+  // parsing an expression.
+  if (state.has_error) {
+    auto open_token = context.state_stack().back().token;
+    if (context.tokens().GetKind(open_token).is_opening_symbol()) {
+      context.SkipTo(context.tokens().GetMatchedClosingToken(open_token));
+      return;
+    }
+  }
+
+  context.PushState(StateKind::Expr);
 }
 
 auto HandleStatementForHeaderFinish(Context& context) -> void {
@@ -120,30 +158,27 @@ auto HandleStatementForHeaderFinish(Context& context) -> void {
 
   context.ConsumeAndAddCloseSymbol(state.token, state, NodeKind::ForHeader);
 
-  context.PushState(State::CodeBlock);
+  context.PushState(StateKind::CodeBlock);
 }
 
 auto HandleStatementForFinish(Context& context) -> void {
   auto state = context.PopState();
 
-  context.AddNode(NodeKind::ForStatement, state.token, state.subtree_start,
-                  state.has_error);
+  context.AddNode(NodeKind::ForStatement, state.token, state.has_error);
 }
 
 auto HandleStatementIf(Context& context) -> void {
   context.PopAndDiscardState();
 
-  context.PushState(State::StatementIfConditionFinish);
-  context.PushState(State::ParenConditionAsIf);
-  ++context.position();
+  context.PushState(StateKind::StatementIfConditionFinish);
+  context.PushState(StateKind::ParenConditionAsIf);
+  context.ConsumeAndDiscard();
 }
 
 auto HandleStatementIfConditionFinish(Context& context) -> void {
   auto state = context.PopState();
-
-  state.state = State::StatementIfThenBlockFinish;
-  context.PushState(state);
-  context.PushState(State::CodeBlock);
+  context.PushState(state, StateKind::StatementIfThenBlockFinish);
+  context.PushState(StateKind::CodeBlock);
 }
 
 auto HandleStatementIfThenBlockFinish(Context& context) -> void {
@@ -151,32 +186,35 @@ auto HandleStatementIfThenBlockFinish(Context& context) -> void {
 
   if (context.ConsumeAndAddLeafNodeIf(Lex::TokenKind::Else,
                                       NodeKind::IfStatementElse)) {
-    state.state = State::StatementIfElseBlockFinish;
-    context.PushState(state);
+    context.PushState(state, StateKind::StatementIfElseBlockFinish);
     // `else if` is permitted as a special case.
     context.PushState(context.PositionIs(Lex::TokenKind::If)
-                          ? State::StatementIf
-                          : State::CodeBlock);
+                          ? StateKind::StatementIf
+                          : StateKind::CodeBlock);
   } else {
-    context.AddNode(NodeKind::IfStatement, state.token, state.subtree_start,
-                    state.has_error);
+    context.AddNode(NodeKind::IfStatement, state.token, state.has_error);
   }
 }
 
 auto HandleStatementIfElseBlockFinish(Context& context) -> void {
   auto state = context.PopState();
-  context.AddNode(NodeKind::IfStatement, state.token, state.subtree_start,
-                  state.has_error);
+  context.AddNode(NodeKind::IfStatement, state.token, state.has_error);
 }
 
 auto HandleStatementReturn(Context& context) -> void {
   auto state = context.PopState();
-  state.state = State::StatementReturnFinish;
-  context.PushState(state);
+  context.PushState(state, StateKind::StatementReturnFinish);
 
   context.AddLeafNode(NodeKind::ReturnStatementStart, context.Consume());
-  if (!context.PositionIs(Lex::TokenKind::Semi)) {
-    context.PushState(State::Expression);
+
+  if (auto var_token = context.ConsumeIf(Lex::TokenKind::Var)) {
+    // `return var;`
+    context.AddLeafNode(NodeKind::ReturnVarModifier, *var_token);
+  } else if (!context.PositionIs(Lex::TokenKind::Semi)) {
+    // `return <expression>;`
+    context.PushState(StateKind::Expr);
+  } else {
+    // `return;`
   }
 }
 
@@ -194,31 +232,29 @@ auto HandleStatementScopeLoop(Context& context) -> void {
       context.ReturnErrorOnState();
     }
   } else {
-    context.PushState(State::Statement);
+    context.PushState(StateKind::Statement);
   }
 }
 
 auto HandleStatementWhile(Context& context) -> void {
   context.PopAndDiscardState();
 
-  context.PushState(State::StatementWhileConditionFinish);
-  context.PushState(State::ParenConditionAsWhile);
-  ++context.position();
+  context.PushState(StateKind::StatementWhileConditionFinish);
+  context.PushState(StateKind::ParenConditionAsWhile);
+  context.ConsumeAndDiscard();
 }
 
 auto HandleStatementWhileConditionFinish(Context& context) -> void {
   auto state = context.PopState();
 
-  state.state = State::StatementWhileBlockFinish;
-  context.PushState(state);
-  context.PushState(State::CodeBlock);
+  context.PushState(state, StateKind::StatementWhileBlockFinish);
+  context.PushState(StateKind::CodeBlock);
 }
 
 auto HandleStatementWhileBlockFinish(Context& context) -> void {
   auto state = context.PopState();
 
-  context.AddNode(NodeKind::WhileStatement, state.token, state.subtree_start,
-                  state.has_error);
+  context.AddNode(NodeKind::WhileStatement, state.token, state.has_error);
 }
 
 }  // namespace Carbon::Parse

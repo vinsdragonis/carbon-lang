@@ -139,11 +139,11 @@ a value afterward.
 
 ## Binding patterns and local variables with `let` and `var`
 
-[_Binding patterns_](/docs/design/README.md#binding-patterns) introduce names
-that are [_value expressions_](#value-expressions) by default and are called
-_value bindings_. This is the desired default for many pattern contexts,
-especially function parameters. Values are a good model for "input" function
-parameters which are the dominant and default style of function parameters:
+A [_value binding pattern_](/docs/design/README.md#binding-patterns) introduces
+a name that is a [_value expression_](#value-expressions) and is called a _value
+binding_. This is the desired default for many pattern contexts, especially
+function parameters. Values are a good model for "input" function parameters
+which are the dominant and default style of function parameters:
 
 ```carbon
 fn Sum(x: i32, y: i32) -> i32 {
@@ -156,22 +156,23 @@ fn Sum(x: i32, y: i32) -> i32 {
 Value bindings require the matched expression to be a _value expression_,
 converting it into one as necessary.
 
-A _variable pattern_ can be introduced with the `var` keyword to create an
-object with storage when matched. Every binding pattern name introduced within a
-variable pattern is called a _variable binding_ and forms a
-[_durable reference expression_](#durable-reference-expressions) to an object
-within the variable pattern's storage when used. Variable patterns require their
-matched expression to be an _initializing expression_ and provide their storage
-to it to be initialized.
+A _variable pattern_ is introduced with the `var` keyword. It declares storage
+for a new object, and initializes it from the matched expression, which must be
+an initializing expression.
+
+A _reference binding pattern_ is a binding pattern that is nested under a `var`
+pattern. It introduces a name called a _reference binding_ that is a
+[durable reference expression](#durable-reference-expressions) to an object
+within the variable pattern's storage.
 
 ```carbon
 fn MutateThing(ptr: i64*);
 
 fn Example() {
-  // `1` starts as a value expression, which is what a `let` binding expects.
+  // `1` starts as a value expression, which is what a value binding expects.
   let x: i64 = 1;
 
-  // `2` also starts as a value expression, but the variable binding requires it
+  // `2` also starts as a value expression, but the variable pattern requires it
   // to be converted to an initializing expression by using the value `2` to
   // initialize the provided variable storage that `y` will refer to.
   var y: i64 = 2;
@@ -211,7 +212,7 @@ inner `var` pattern here:
 ```carbon
 fn DestructuringExample() {
   // Both `1` and `2` start as value expressions. The `x` binding directly
-  // matches `1`. For `2`, the variable binding requires it to be converted to
+  // matches `1`. For `2`, the variable pattern requires it to be converted to
   // an initializing expression by using the value `2` to initialize the
   // provided variable storage that `y` will refer to.
   let (x: i64, var y: i64) = (1, 2);
@@ -290,7 +291,7 @@ There are several kinds of expressions that produce durable references in
 Carbon:
 
 -   Names of objects introduced with a
-    [variable binding](#binding-patterns-and-local-variables-with-let-and-var):
+    [reference binding](#binding-patterns-and-local-variables-with-let-and-var):
     `x`
 -   Dereferenced [pointers](#pointers): `*p`
 -   Names of subobjects through member access to some other durable reference
@@ -414,9 +415,9 @@ the available implementation strategies.
 > **Future work:** The interaction between a
 > [custom value representation](#value-representation-and-customization) and a
 > value expression used with a polymorphic type needs to be fully captured.
-> Either it needs to restrict to a `const Self*` style representation (to
-> prevent slicing) or it needs to have a model for the semantics when a
-> different value representation is used.
+> Either it needs to restrict to a `const ref` style representation (to prevent
+> slicing) or it needs to have a model for the semantics when a different value
+> representation is used.
 
 ### Interop with C++ `const &` and `const` methods
 
@@ -544,6 +545,10 @@ var x: MyType = CreateMyObject();
 The `<return-expression>` in the `return` statement actually initializes the
 storage provided for `x`. There is no "copy" or other step.
 
+> **Future work:** Extend this to also apply when a variable pattern is
+> initialized from a tuple/struct literal, or a tuple/struct pattern with
+> variable subpatterns is initialized from a single function call.
+
 All `return` statement expressions are required to be initializing expressions
 and in fact initialize the storage provided to the function's call expression.
 This in turn causes the property to hold _transitively_ across an arbitrary
@@ -554,6 +559,12 @@ Note that functions without a specified return type work exactly the same as
 functions with a `()` return type for the purpose of expression categories.
 
 #### Deferred initialization from values and references
+
+TODO: This section needs to be updated to reflect the addition of `-> val`
+returns in [proposal #5434](/proposals/p5434.md). This section could be replaced
+by a statement that initializing returns may be replaced by value returns when
+that is safe and correct, moving much of this content into a description of how
+value returns works.
 
 Carbon also makes the evaluation of function calls and return statements tightly
 linked in order to enable more efficiency improvements. It allows the actual
@@ -640,6 +651,9 @@ specialized constructs given the specialized nature of these operations.
 
 ### Reference types
 
+TODO: This section needs to be updated to reflect
+[proposal #5434](/proposals/p5434.md).
+
 Unlike C++, Carbon does not currently have reference types. The only form of
 indirect access are pointers. There are a few aspects to this decision that need
 to be separated carefully from each other as the motivations and considerations
@@ -674,8 +688,8 @@ alternatives considered section of [P2006]:
 ### Pointer syntax
 
 The type of a pointer to a type `T` is written with a postfix `*` as in `T*`.
-Dereferencing a pointer is a [_reference expression_] and is written with a
-prefix `*` as in `*p`:
+Dereferencing a pointer is a [_reference expression_] and is written with a prefix
+`*` as in `*p`:
 
 ```carbon
 var i: i32 = 42;
@@ -883,12 +897,12 @@ keyword. It isn't final at all and likely will need to change to read well.
 The provided representation type must be one of the following:
 
 -   `const Self` -- this forces the use of a _copy_ of the object.
--   `const Self *` -- this forces the use of a [_pointer_](#pointers) to the
-    original object.
+-   `const ref` -- this forces the use of a [_pointer_](#pointers) to the
+    original object, but with the `const` API subset.
 -   A custom type that is not `Self`, `const Self`, or a pointer to either.
 
-If the representation is `const Self` or `const Self *`, then the type fields
-will be accessible as [_value expressions_](#value-expressions) using the normal
+If the representation is `const Self` or `const ref`, then the type fields will
+be accessible as [_value expressions_](#value-expressions) using the normal
 member access syntax for value expressions of a type. These will be implemented
 by either accessing a copy of the object in the non-pointer case or a pointer to
 the original object in the pointer case. A representation of `const Self`
@@ -899,13 +913,13 @@ used.
 If no customization is provided, the implementation will select one based on a
 set of heuristics. Some examples:
 
--   Non-copyable types and polymorphic types would use a `const Self*`.
+-   Non-copyable types and polymorphic types would use a `const ref`.
 -   Small objects that are trivially copied in a machine register would use
     `const Self`.
 
 When a custom type is provided, it must not be `Self`, `const Self`, or a
 pointer to either. The type provided will be used on function call boundaries
-and as the implementation representation for `let` bindings and other value
+and as the implementation representation for value bindings and other value
 expressions referencing an object of the type. A specifier of `value_rep = T;`
 will require that the type containing that specifier satisfies the constraint
 `impls ReferenceImplicitAs where .T = T` using the following interface:
@@ -940,7 +954,7 @@ class StringView {
   private var data_ptr: Char*;
   private var size: i64;
 
-  fn Create(data_ptr: Char*, size: i64) -> StringView {
+  fn Make(data_ptr: Char*, size: i64) -> StringView {
     return {.data_ptr = data_ptr, .size = size};
   }
 
@@ -962,7 +976,7 @@ class String {
       // Because this is called on the String object prior to it becoming
       // a value, we can access an SSO buffer or other interior pointers
       // of `self`.
-      return StringView::Create(self->data_ptr, self->size);
+      return StringView.Make(self->data_ptr, self->size);
     }
   }
 

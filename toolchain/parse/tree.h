@@ -7,34 +7,46 @@
 
 #include <iterator>
 
+#include "common/check.h"
 #include "common/error.h"
 #include "common/ostream.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/ADT/iterator_range.h"
-#include "toolchain/diagnostics/diagnostic_emitter.h"
+#include "toolchain/base/value_store.h"
 #include "toolchain/lex/tokenized_buffer.h"
+#include "toolchain/parse/node_ids.h"
 #include "toolchain/parse/node_kind.h"
+#include "toolchain/parse/typed_nodes.h"
 
 namespace Carbon::Parse {
 
-// A lightweight handle representing a node in the tree.
-//
-// Objects of this type are small and cheap to copy and store. They don't
-// contain any of the information about the node, and serve as a handle that
-// can be used with the underlying tree to query for detailed information.
-//
-// That said, nodes can be compared and are part of a depth-first pre-order
-// sequence across all nodes in the parse tree.
-struct Node : public ComparableIndexBase {
-  // An explicitly invalid instance.
-  static const Node Invalid;
+struct DeferredDefinition;
 
-  using ComparableIndexBase::ComparableIndexBase;
+// The index of a `DeferredDefinition` within the parse tree.
+struct DeferredDefinitionIndex : public IndexBase<DeferredDefinitionIndex> {
+  static constexpr llvm::StringLiteral Label = "deferred_def";
+
+  using IndexBase::IndexBase;
 };
 
-constexpr Node Node::Invalid = Node(Node::InvalidIndex);
+// A function whose definition is deferred because it is defined inline in a
+// class or similar scope.
+//
+// Such functions are type-checked out of order, with their bodies checked after
+// the enclosing declaration is complete. Some additional information is tracked
+// for these functions in the parse tree to support this reordering.
+struct DeferredDefinition {
+  // The node that starts the function definition.
+  FunctionDefinitionStartId start_id;
+  // The function definition node.
+  FunctionDefinitionId definition_id = NodeId::None;
+  // The index of the next method that is not nested within this one.
+  DeferredDefinitionIndex next_definition_index = DeferredDefinitionIndex::None;
+};
+
+// Defined in typed_nodes.h. Include that to call `Tree::ExtractFile()`.
+struct File;
 
 // A tree of parsed tokens based on the language grammar.
 //
@@ -60,128 +72,148 @@ constexpr Node Node::Invalid = Node(Node::InvalidIndex);
 class Tree : public Printable<Tree> {
  public:
   class PostorderIterator;
-  class SiblingIterator;
 
-  // Parses the token buffer into a `Tree`.
-  //
-  // This is the factory function which is used to build parse trees.
-  static auto Parse(Lex::TokenizedBuffer& tokens, DiagnosticConsumer& consumer,
-                    llvm::raw_ostream* vlog_stream) -> Tree;
+  // Names in packaging, whether the file's packaging or an import. Links back
+  // to the node for diagnostics.
+  struct PackagingNames {
+    AnyPackagingDeclId node_id = AnyPackagingDeclId::None;
+    PackageNameId package_id = PackageNameId::None;
+    // TODO: Move LibraryNameId to Base and use it here.
+    StringLiteralValueId library_id = StringLiteralValueId::None;
+    InlineImportBodyId inline_body_id = InlineImportBodyId::None;
+    // Whether an import is exported. This is on the file's packaging
+    // declaration even though it doesn't apply, for consistency in structure.
+    bool is_export = false;
+  };
 
-  // Tests whether there are any errors in the parse tree.
-  [[nodiscard]] auto has_errors() const -> bool { return has_errors_; }
+  // The file's packaging.
+  struct PackagingDecl {
+    PackagingNames names;
+    bool is_impl;
+  };
+
+  // Wires up the reference to the tokenized buffer. The `Parse` function should
+  // be used to actually parse the tokens into a tree.
+  explicit Tree(Lex::TokenizedBuffer& tokens_arg) : tokens_(&tokens_arg) {
+    // If the tree is valid, there will be one node per token, so reserve once.
+    node_impls_.reserve(tokens_->expected_max_parse_tree_size());
+  }
+
+  auto has_errors() const -> bool { return has_errors_; }
+
+  auto set_has_errors(bool has_errors) -> void { has_errors_ = has_errors; }
 
   // Returns the number of nodes in this parse tree.
-  [[nodiscard]] auto size() const -> int { return node_impls_.size(); }
+  auto size() const -> int { return node_impls_.size(); }
 
   // Returns an iterable range over the parse tree nodes in depth-first
   // postorder.
-  [[nodiscard]] auto postorder() const
-      -> llvm::iterator_range<PostorderIterator>;
-
-  // Returns an iterable range over the parse tree node and all of its
-  // descendants in depth-first postorder.
-  [[nodiscard]] auto postorder(Node n) const
-      -> llvm::iterator_range<PostorderIterator>;
-
-  // Returns an iterable range over the direct children of a node in the parse
-  // tree. This is a forward range, but is constant time to increment. The order
-  // of children is the same as would be found in a reverse postorder traversal.
-  [[nodiscard]] auto children(Node n) const
-      -> llvm::iterator_range<SiblingIterator>;
-
-  // Returns an iterable range over the roots of the parse tree. This is a
-  // forward range, but is constant time to increment. The order of roots is the
-  // same as would be found in a reverse postorder traversal.
-  [[nodiscard]] auto roots() const -> llvm::iterator_range<SiblingIterator>;
+  auto postorder() const -> llvm::iterator_range<PostorderIterator>;
 
   // Tests whether a particular node contains an error and may not match the
   // full expected structure of the grammar.
-  [[nodiscard]] auto node_has_error(Node n) const -> bool;
+  auto node_has_error(NodeId n) const -> bool {
+    CARBON_DCHECK(n.has_value());
+    return node_impls_[n.index].has_error();
+  }
 
   // Returns the kind of the given parse tree node.
-  [[nodiscard]] auto node_kind(Node n) const -> NodeKind;
+  auto node_kind(NodeId n) const -> NodeKind {
+    CARBON_DCHECK(n.has_value());
+    return node_impls_[n.index].kind();
+  }
 
   // Returns the token the given parse tree node models.
-  [[nodiscard]] auto node_token(Node n) const -> Lex::Token;
+  auto node_token(NodeId n) const -> Lex::TokenIndex;
 
-  [[nodiscard]] auto node_subtree_size(Node n) const -> int32_t;
+  // Returns whether this node is a valid node of the specified type.
+  template <typename T>
+  auto IsValid(NodeId node_id) const -> bool {
+    return node_kind(node_id) == T::Kind && !node_has_error(node_id);
+  }
 
-  // Returns the text backing the token for the given node.
-  //
-  // This is a convenience method for chaining from a node through its token to
-  // the underlying source text.
-  [[nodiscard]] auto GetNodeText(Node n) const -> llvm::StringRef;
+  template <typename IdT>
+  auto IsValid(IdT id) const -> bool {
+    using T = typename NodeForId<IdT>::TypedNode;
+    CARBON_DCHECK(node_kind(id) == T::Kind);
+    return !node_has_error(id);
+  }
 
-  // See the other Print comments.
+  // Converts `n` to a constrained node id `T` if the `node_kind(n)` matches
+  // the constraint on `T`.
+  template <typename T>
+  auto TryAs(NodeId n) const -> std::optional<T> {
+    CARBON_DCHECK(n.has_value());
+    if (ConvertTo<T>::AllowedFor(node_kind(n))) {
+      return T::UnsafeMake(n);
+    } else {
+      return std::nullopt;
+    }
+  }
+
+  // Converts to `n` to a constrained node id `T`. Checks that the
+  // `node_kind(n)` matches the constraint on `T`.
+  template <typename T>
+  auto As(NodeId n) const -> T {
+    CARBON_DCHECK(n.has_value());
+    CARBON_DCHECK(ConvertTo<T>::AllowedFor(node_kind(n)),
+                  "cannot convert {0} to {1}", node_kind(n), typeid(T).name());
+    return T::UnsafeMake(n);
+  }
+
+  auto packaging_decl() const -> const std::optional<PackagingDecl>& {
+    return packaging_decl_;
+  }
+  auto imports() const -> llvm::ArrayRef<PackagingNames> { return imports_; }
+  auto deferred_definitions() const
+      -> const ValueStore<DeferredDefinitionIndex, DeferredDefinition>& {
+    return deferred_definitions_;
+  }
+
+  // Builds TreeAndSubtrees to print the tree.
   auto Print(llvm::raw_ostream& output) const -> void;
 
-  // Prints a description of the parse tree to the provided `raw_ostream`.
-  //
-  // The tree may be printed in either preorder or postorder. Output represents
-  // each node as a YAML record; in preorder, children are nested.
-  //
-  // In both, a node is formatted as:
-  //   ```
-  //   {kind: 'foo', text: '...'}
-  //   ```
-  //
-  // The top level is formatted as an array of these nodes.
-  //   ```
-  //   [
-  //   {kind: 'foo', text: '...'},
-  //   {kind: 'foo', text: '...'},
-  //   ...
-  //   ]
-  //   ```
-  //
-  // In postorder, nodes are indented in order to indicate depth. For example, a
-  // node with two children, one of them with an error:
-  //   ```
-  //     {kind: 'bar', text: '...', has_error: yes},
-  //     {kind: 'baz', text: '...'}
-  //   {kind: 'foo', text: '...', subtree_size: 2}
-  //   ```
-  //
-  // In preorder, nodes are marked as children with postorder (storage) index.
-  // For example, a node with two children, one of them with an error:
-  //   ```
-  //   {node_index: 2, kind: 'foo', text: '...', subtree_size: 2, children: [
-  //     {node_index: 0, kind: 'bar', text: '...', has_error: yes},
-  //     {node_index: 1, kind: 'baz', text: '...'}]}
-  //   ```
-  //
-  // This can be parsed as YAML using tools like `python-yq` combined with `jq`
-  // on the command line. The format is also reasonably amenable to other
-  // line-oriented shell tools from `grep` to `awk`.
-  auto Print(llvm::raw_ostream& output, bool preorder) const -> void;
+  // Collects memory usage of members.
+  auto CollectMemUsage(MemUsage& mem_usage, llvm::StringRef label) const
+      -> void;
 
   // Verifies the parse tree structure. Checks invariants of the parse tree
   // structure and returns verification errors.
   //
-  // This is primarily intended to be used as a
-  // debugging aid. This routine doesn't directly CHECK so that it can be used
-  // within a debugger.
-  [[nodiscard]] auto Verify() const -> ErrorOr<Success>;
+  // In opt builds, this does some minimal checking. In debug builds, it'll
+  // build a TreeAndSubtrees and run further verification. This doesn't directly
+  // CHECK so that it can be used within a debugger.
+  auto Verify() const -> ErrorOr<Success>;
+
+  auto tokens() const -> const Lex::TokenizedBuffer& { return *tokens_; }
 
  private:
   friend class Context;
+  friend class TypedNodesTestPeer;
+
+  template <typename T>
+  struct ConvertTo;
 
   // The in-memory representation of data used for a particular node in the
   // tree.
-  struct NodeImpl {
-    explicit NodeImpl(NodeKind kind, bool has_error, Lex::Token token,
-                      int subtree_size)
-        : kind(kind),
-          has_error(has_error),
-          token(token),
-          subtree_size(subtree_size) {}
+  class NodeImpl {
+   public:
+    explicit NodeImpl(NodeKind kind, bool has_error, Lex::TokenIndex token)
+        : kind_(kind), has_error_(has_error), token_index_(token.index) {
+      CARBON_DCHECK(token.index >= 0, "Unexpected token for node: {0}", token);
+    }
 
+    auto kind() const -> NodeKind { return kind_; }
+    auto set_kind(NodeKind kind) -> void { kind_ = kind; }
+    auto has_error() const -> bool { return has_error_; }
+    auto token() const -> Lex::TokenIndex {
+      return Lex::TokenIndex(token_index_);
+    }
+
+   private:
     // The kind of this node. Note that this is only a single byte.
-    NodeKind kind;
-
-    // We have 3 bytes of padding here that we can pack flags or other compact
-    // data into.
+    NodeKind kind_;
+    static_assert(sizeof(kind_) == 1, "TokenKind must pack to 8 bits");
 
     // Whether this node is or contains a parse error.
     //
@@ -196,81 +228,82 @@ class Tree : public Printable<Tree> {
     // optional (and will depend on the particular parse implementation
     // strategy). The goal is that you can rely on grammar-based structural
     // invariants *until* you encounter a node with this set.
-    bool has_error = false;
+    bool has_error_ : 1;
 
     // The token root of this node.
-    Lex::Token token;
-
-    // The size of this node's subtree of the parse tree. This is the number of
-    // nodes (and thus tokens) that are covered by this node (and its
-    // descendents) in the parse tree.
-    //
-    // During a *reverse* postorder (RPO) traversal of the parse tree, this can
-    // also be thought of as the offset to the next non-descendant node. When
-    // this node is not the first child of its parent (which is the last child
-    // visited in RPO), that is the offset to the next sibling. When this node
-    // *is* the first child of its parent, this will be an offset to the node's
-    // parent's next sibling, or if it the parent is also a first child, the
-    // grandparent's next sibling, and so on.
-    //
-    // This field should always be a positive integer as at least this node is
-    // part of its subtree.
-    int32_t subtree_size;
+    unsigned token_index_ : Lex::TokenIndex::Bits;
   };
 
-  static_assert(sizeof(NodeImpl) == 12,
+  static_assert(sizeof(NodeImpl) == 4,
                 "Unexpected size of node implementation!");
 
-  // Wires up the reference to the tokenized buffer. The `Parse` function should
-  // be used to actually parse the tokens into a tree.
-  explicit Tree(Lex::TokenizedBuffer& tokens_arg) : tokens_(&tokens_arg) {
-    // If the tree is valid, there will be one node per token, so reserve once.
-    node_impls_.reserve(tokens_->expected_parse_tree_size());
+  // Sets the kind of a node. This is intended to allow putting the tree into a
+  // state where verification can fail, in order to make the failure path of
+  // `Verify` testable.
+  auto SetNodeKindForTesting(NodeId node_id, NodeKind kind) -> void {
+    node_impls_[node_id.index].set_kind(kind);
   }
-
-  // Prints a single node for Print(). Returns true when preorder and there are
-  // children.
-  auto PrintNode(llvm::raw_ostream& output, Node n, int depth,
-                 bool preorder) const -> bool;
 
   // Depth-first postorder sequence of node implementation data.
   llvm::SmallVector<NodeImpl> node_impls_;
 
   Lex::TokenizedBuffer* tokens_;
 
-  // Indicates if any errors were encountered while parsing.
+  // True if any lowering-blocking issues were encountered while parsing. Trees
+  // are expected to still be structurally valid for checking.
   //
   // This doesn't indicate how much of the tree is structurally accurate with
-  // respect to the grammar. That can be identified by looking at the `HasError`
-  // flag for a given node (see above for details). This simply indicates that
-  // some errors were encountered somewhere. A key implication is that when this
-  // is true we do *not* have the expected 1:1 mapping between tokens and parsed
-  // nodes as some tokens may have been skipped.
+  // respect to the grammar. That can be identified by looking at
+  // `node_has_error` (see above for details). This simply indicates that some
+  // errors were encountered somewhere. A key implication is that when this is
+  // true we do *not* enforce the expected 1:1 mapping between tokens and parsed
+  // nodes, because some tokens may have been skipped.
   bool has_errors_ = false;
+
+  std::optional<PackagingDecl> packaging_decl_;
+  llvm::SmallVector<PackagingNames> imports_;
+  ValueStore<DeferredDefinitionIndex, DeferredDefinition> deferred_definitions_;
 };
 
 // A random-access iterator to the depth-first postorder sequence of parse nodes
-// in the parse tree. It produces `Tree::Node` objects which are opaque
+// in the parse tree. It produces `Tree::NodeId` objects which are opaque
 // handles and must be used in conjunction with the `Tree` itself.
 class Tree::PostorderIterator
     : public llvm::iterator_facade_base<PostorderIterator,
-                                        std::random_access_iterator_tag, Node,
-                                        int, Node*, Node>,
+                                        std::random_access_iterator_tag, NodeId,
+                                        int, const NodeId*, NodeId>,
       public Printable<Tree::PostorderIterator> {
  public:
+  // Returns an iterable range between the two parse tree nodes, in depth-first
+  // postorder. The range is inclusive of the bounds: [begin, end].
+  static auto MakeRange(NodeId begin, NodeId end)
+      -> llvm::iterator_range<PostorderIterator>;
+
+  // Prefer using the `postorder` range calls, but direct construction is
+  // allowed if needed.
+  explicit PostorderIterator(NodeId n) : node_(n) {}
+
   PostorderIterator() = delete;
 
-  auto operator==(const PostorderIterator& rhs) const -> bool {
-    return node_ == rhs.node_;
+  friend auto operator==(const PostorderIterator& lhs,
+                         const PostorderIterator& rhs) -> bool {
+    return lhs.node_ == rhs.node_;
   }
-  auto operator<(const PostorderIterator& rhs) const -> bool {
-    return node_ < rhs.node_;
+  // While we don't want users to directly leverage the index of `NodeId` for
+  // ordering, when we're explicitly walking in postorder, that becomes
+  // reasonable so add the ordering here and reach down for the index
+  // explicitly.
+  friend auto operator<=>(const PostorderIterator& lhs,
+                          const PostorderIterator& rhs)
+      -> std::strong_ordering {
+    return lhs.node_.index <=> rhs.node_.index;
   }
 
-  auto operator*() const -> Node { return node_; }
+  auto operator*() const -> NodeId { return node_; }
 
-  auto operator-(const PostorderIterator& rhs) const -> int {
-    return node_.index - rhs.node_.index;
+  friend auto operator-(const PostorderIterator& lhs,
+                        const PostorderIterator& rhs) -> int {
+    return lhs.node_.index - rhs.node_.index;
   }
 
   auto operator+=(int offset) -> PostorderIterator& {
@@ -288,58 +321,26 @@ class Tree::PostorderIterator
  private:
   friend class Tree;
 
-  explicit PostorderIterator(Node n) : node_(n) {}
-
-  Node node_;
+  NodeId node_;
 };
 
-// A forward iterator across the siblings at a particular level in the parse
-// tree. It produces `Tree::Node` objects which are opaque handles and must
-// be used in conjunction with the `Tree` itself.
-//
-// While this is a forward iterator and may not have good locality within the
-// `Tree` data structure, it is still constant time to increment and
-// suitable for algorithms relying on that property.
-//
-// The siblings are discovered through a reverse postorder (RPO) tree traversal
-// (which is made constant time through cached distance information), and so the
-// relative order of siblings matches their RPO order.
-class Tree::SiblingIterator
-    : public llvm::iterator_facade_base<
-          SiblingIterator, std::forward_iterator_tag, Node, int, Node*, Node>,
-      public Printable<Tree::SiblingIterator> {
- public:
-  explicit SiblingIterator() = delete;
+template <const NodeKind& K>
+struct Tree::ConvertTo<NodeIdForKind<K>> {
+  static auto AllowedFor(NodeKind kind) -> bool { return kind == K; }
+};
 
-  auto operator==(const SiblingIterator& rhs) const -> bool {
-    return node_ == rhs.node_;
+template <NodeCategory::RawEnumType C>
+struct Tree::ConvertTo<NodeIdInCategory<C>> {
+  static auto AllowedFor(NodeKind kind) -> bool {
+    return kind.category().HasAnyOf(C);
   }
-  auto operator<(const SiblingIterator& rhs) const -> bool {
-    // Note that child iterators walk in reverse compared to the postorder
-    // index.
-    return node_ > rhs.node_;
+};
+
+template <typename... T>
+struct Tree::ConvertTo<NodeIdOneOf<T...>> {
+  static auto AllowedFor(NodeKind kind) -> bool {
+    return ((kind == T::Kind) || ...);
   }
-
-  auto operator*() const -> Node { return node_; }
-
-  using iterator_facade_base::operator++;
-  auto operator++() -> SiblingIterator& {
-    node_.index -= std::abs(tree_->node_impls_[node_.index].subtree_size);
-    return *this;
-  }
-
-  // Prints the underlying node index.
-  auto Print(llvm::raw_ostream& output) const -> void;
-
- private:
-  friend class Tree;
-
-  explicit SiblingIterator(const Tree& tree_arg, Node n)
-      : tree_(&tree_arg), node_(n) {}
-
-  const Tree* tree_;
-
-  Node node_;
 };
 
 }  // namespace Carbon::Parse

@@ -16,6 +16,7 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
     -   [General naming rules](#general-naming-rules)
     -   [File names](#file-names)
     -   [Syntax and formatting](#syntax-and-formatting)
+    -   [Naming variable types and the use of `auto`](#naming-variable-types-and-the-use-of-auto)
     -   [Copyable and movable types](#copyable-and-movable-types)
     -   [Static and global variables](#static-and-global-variables)
     -   [Foundational libraries and data types](#foundational-libraries-and-data-types)
@@ -70,6 +71,12 @@ serves to simplify it.
 -   All other names use `snake_case`, including function parameters, and
     non-constant local and member variables.
     -   Private member variables should have a trailing `_`.
+-   For acronyms and initialisms, we generally follow the
+    [capitalization style](https://google.github.io/styleguide/cppguide.html#General_Naming_Rules)
+    (`Api` instead of `API`).
+    -   The exceptions are `LLVM` and `IR`, which we capitalize.
+-   For abbreviations, there is a list of
+    [common toolchain abbreviations](/toolchain/docs/idioms.md#abbreviations-used-in-the-code-aka-carbon-abbreviation-decoder-ring).
 
 ### File names
 
@@ -85,14 +92,15 @@ to pick a consistent option. Where possible,
 [`clang-format`](#suggested-clang-format-contents) should be used to enforce
 these.
 
--   Always use trailing return type syntax for functions and methods.
+-   Always use trailing return type syntax for functions and methods, including
+    `-> void`, for consistency with Carbon syntax.
 -   Place the pointer `*` adjacent to the type: `TypeName* variable_name`.
 -   Only declare one variable at a time (declaring multiple variables requires
     confusing repetition of part of the type).
 -   Write `const` before the type when at the outer level: `const int N = 42;`.
 -   Only use line comments (with `//`, not `/* ... */`), on a line by
     themselves, except for
-    [argument name comments](https://clang.llvm.org/extra/clang-tidy/checks/bugprone-argument-comment.html#bugprone-argument-comment),
+    [argument name comments](https://clang.llvm.org/extra/clang-tidy/checks/bugprone/argument-comment.html),
     [closing namespace comments](https://google.github.io/styleguide/cppguide.html#Namespaces),
     and similar structural comments. In particular, don't append comments about
     a line of code to the end of its line:
@@ -124,17 +132,51 @@ these.
     -   An exception is made for functions like `std::swap` that are
         intentionally called using ADL. This pattern should be written as
         `{ using std::swap; swap(thing1, thing2); }`.
--   Follow the rules for initialization outlined in
-    [Abseil's tip #88](https://abseil.io/tips/88#best-practices-for-initialization).
-    To summarize, omitting some details from the article:
+-   For initialization:
     -   Use assignment syntax (`=`) when initializing directly with the intended
         value (or with a braced initializer directly specifying that value).
-    -   Use the traditional constructor syntax (with parentheses) when the
-        initialization is performing some active logic, rather than simply
-        composing values together.
-    -   Use `{}` initialization without the `=` only if the above options don't
+    -   Prefer braced initialization for aggregate initialization, such as
+        structs, pairs, and initializer lists.
+        -   Use designated initializers (`{.a = 1}`) when possible for structs,
+            but not for pairs or tuples. Prefer to only include the typename
+            when required to compile (`WizType{.a = 1}`). This is analogous to
+            how structs and tuples would be written in Carbon code.
+        -   Avoid braced initialization for types that define a constructor,
+            except as an initializer list
+            (`llvm::SmallVector<int> v = {0, 1};`), `std::pair`, or
+            `std::tuple`. Never use it with `auto` (`auto a = {0, 1}`).
+    -   Prefer parenthesized initialization (`FooType foo(10);`) in most other
+        cases.
+    -   Braced initialization without `=` (`BarType bar{10}`) should be treated
+        as a fallback, preferred only when other constructor syntax doesn't
         compile.
-    -   Never mix `{}` initialization and `auto`.
+    -   Some additional commentary is in
+        [Abseil's tip #88](https://abseil.io/tips/88#best-practices-for-initialization),
+        although these guidelines differ slightly.
+-   Always mark constructors `explicit` unless there's a specific reason to
+    support implicit or `{}` initialization.
+-   When passing an object's address as an argument, use a reference unless one
+    of the following cases applies:
+
+    -   If the parameter is optional, use a pointer and document that it may be
+        null.
+    -   If it is captured and must outlive the call expression itself, use a
+        pointer and document that it must not be null (unless it is also
+        optional).
+
+        -   When storing an object's address as a non-owned member, prefer
+            storing a pointer. For example:
+
+            ```cpp
+            class Bar {
+             public:
+              // `foo` must not be null.
+              explicit Bar(Foo* foo) : foo_(foo) {}
+             private:
+              Foo* foo_;
+            };
+            ```
+
 -   Always use braces for conditional, `switch`, and loop statements, even when
     the body is a single statement.
     -   Within a `switch` statement, use braces after a `case` label when
@@ -150,6 +192,27 @@ these.
     -   Tests are an exception and should typically be wrapped in an anonymous
         namespace under the namespace of the code under test, to keep everything
         internal.
+-   For
+    [Access Control](https://google.github.io/styleguide/cppguide.html#Access_Control),
+    specifically for test fixtures in `.cpp` files, we use `public` instead of
+    `protected`. This is motivated by the
+    `misc-non-private-member-variables-in-classes` tidy check.
+
+### Naming variable types and the use of `auto`
+
+We generally use `auto` for most local variables when a type can be inferred,
+except for primitive types such as `bool` and `int`. It is not required to use
+`auto`, and shorter type names such as `SemIR::InstId` are sometimes named even
+though they could be inferred. Naming the type can be helpful in cases where the
+type would be obscure and can not be explained with the variable name. Function
+parameters generally name the type of each parameter, though lambdas may use
+`auto` if it's helpful.
+
+When naming variables, we typically suffix `_id` for ID types. When needed, we
+can also resolve ambiguity by referring to the full type name in the variable
+name; for example, if there's a `ClassId`, `InstId`, and `TypeId` for the same
+class entity, we might call these `class_id`, `class_inst_id`, and
+`class_type_id`. Similarly, we might call an `Inst` `class_inst`.
 
 ### Copyable and movable types
 

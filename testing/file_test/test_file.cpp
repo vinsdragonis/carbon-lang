@@ -1,0 +1,896 @@
+// Part of the Carbon Language project, under the Apache License v2.0 with LLVM
+// Exceptions. See /LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+#include "testing/file_test/test_file.h"
+
+#include <fstream>
+#include <optional>
+#include <string>
+#include <utility>
+
+#include "common/check.h"
+#include "common/error.h"
+#include "common/find.h"
+#include "common/raw_string_ostream.h"
+#include "common/set.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/JSON.h"
+#include "testing/base/file_helpers.h"
+#include "testing/file_test/line.h"
+
+namespace Carbon::Testing {
+
+using ::testing::Matcher;
+using ::testing::MatchesRegex;
+using ::testing::StrEq;
+
+// Processes conflict markers, including tracking of whether code is within a
+// conflict marker. Returns true if the line is consumed.
+static auto TryConsumeConflictMarker(bool running_autoupdate,
+                                     llvm::StringRef line,
+                                     llvm::StringRef line_trimmed,
+                                     bool& inside_conflict_marker)
+    -> ErrorOr<bool> {
+  bool is_start = line.starts_with("<<<<<<<");
+  bool is_middle = line.starts_with("=======") || line.starts_with("|||||||");
+  bool is_end = line.starts_with(">>>>>>>");
+
+  // When running the test, any conflict marker is an error.
+  if (!running_autoupdate && (is_start || is_middle || is_end)) {
+    return ErrorBuilder() << "Conflict marker found:\n" << line;
+  }
+
+  // Autoupdate tracks conflict markers for context, and will discard
+  // conflicting lines when it can autoupdate them.
+  if (inside_conflict_marker) {
+    if (is_start) {
+      return ErrorBuilder() << "Unexpected conflict marker inside conflict:\n"
+                            << line;
+    }
+    if (is_middle) {
+      return true;
+    }
+    if (is_end) {
+      inside_conflict_marker = false;
+      return true;
+    }
+
+    // Look for CHECK and TIP lines, which can be discarded.
+    if (line_trimmed.starts_with("// CHECK:STDOUT:") ||
+        line_trimmed.starts_with("// CHECK:STDERR:") ||
+        line_trimmed.starts_with("// TIP:")) {
+      return true;
+    }
+
+    return ErrorBuilder()
+           << "Autoupdate can't discard non-CHECK lines inside conflicts:\n"
+           << line;
+  } else {
+    if (is_start) {
+      inside_conflict_marker = true;
+      return true;
+    }
+    if (is_middle || is_end) {
+      return ErrorBuilder() << "Unexpected conflict marker outside conflict:\n"
+                            << line;
+    }
+    return false;
+  }
+}
+
+// State for file splitting logic: TryConsumeSplit and FinishSplit.
+struct SplitState {
+  auto has_splits() const -> bool { return file_index > 0; }
+
+  auto add_content(llvm::StringRef line) -> void {
+    content.append(line.str());
+    content.append("\n");
+  }
+
+  // Whether content has been found. Only updated before a file split is found
+  // (which may be never).
+  bool found_code_pre_split = false;
+
+  // The current file name, considering splits. Empty for the default file.
+  llvm::StringRef filename = "";
+
+  // The accumulated content for the file being built. This may elide some of
+  // the original content, such as conflict markers.
+  std::string content;
+
+  // The current file index.
+  int file_index = 0;
+};
+
+// Given a `file:/<filename>` URI, returns the filename.
+static auto ExtractFilePathFromUri(llvm::StringRef uri)
+    -> ErrorOr<llvm::StringRef> {
+  static constexpr llvm::StringRef FilePrefix = "file:/";
+  if (!uri.starts_with(FilePrefix)) {
+    return ErrorBuilder() << "uri `" << uri << "` is not a file uri";
+  }
+  return uri.drop_front(FilePrefix.size());
+}
+
+// When `FROM_FILE_SPLIT` is used in path `textDocument.text`, populate the
+// value from the split matching the `uri`. Only used for
+// `textDocument/didOpen`.
+static auto AutoFillDidOpenParams(llvm::json::Object& params,
+                                  llvm::ArrayRef<TestFile::Split> splits)
+    -> ErrorOr<Success> {
+  auto* text_document = params.getObject("textDocument");
+  if (text_document == nullptr) {
+    return Success();
+  }
+
+  auto attr_it = text_document->find("text");
+  if (attr_it == text_document->end() || attr_it->second != "FROM_FILE_SPLIT") {
+    return Success();
+  }
+
+  auto uri = text_document->getString("uri");
+  if (!uri) {
+    return Error("missing uri in params.textDocument");
+  }
+
+  CARBON_ASSIGN_OR_RETURN(auto file_path, ExtractFilePathFromUri(*uri));
+  const auto* split = FindIfOrNull(splits, [&](const TestFile::Split& split) {
+    return split.filename == file_path;
+  });
+  if (!split) {
+    return ErrorBuilder() << "No split found for uri: " << *uri;
+  }
+  attr_it->second = split->content;
+  return Success();
+}
+
+// Reformats `[[@LSP:` and similar keyword as an LSP call with headers. Returns
+// the position to start a find for the next keyword.
+static auto ReplaceLspKeywordAt(std::string& content, size_t keyword_pos,
+                                int& lsp_call_id,
+                                llvm::ArrayRef<TestFile::Split> splits)
+    -> ErrorOr<size_t> {
+  llvm::StringRef content_at_keyword =
+      llvm::StringRef(content).substr(keyword_pos);
+
+  auto [keyword, body_start] = content_at_keyword.split(":");
+  if (keyword.size() == content_at_keyword.size()) {
+    return ErrorBuilder() << "Missing `:` for `"
+                          << content_at_keyword.take_front(10) << "`";
+  }
+
+  // Whether the first param is a method or id.
+  llvm::StringRef method_or_id_label = "method";
+  // Whether to attach the `lsp_call_id`.
+  bool use_call_id = false;
+  // The JSON label for extra content.
+  llvm::StringRef extra_content_label;
+  if (keyword == "[[@LSP-CALL") {
+    use_call_id = true;
+    extra_content_label = "params";
+  } else if (keyword == "[[@LSP-NOTIFY") {
+    extra_content_label = "params";
+  } else if (keyword == "[[@LSP-REPLY") {
+    method_or_id_label = "id";
+    extra_content_label = "result";
+  } else if (keyword != "[[@LSP") {
+    return ErrorBuilder() << "Unrecognized @LSP keyword at `"
+                          << keyword.take_front(10) << "`";
+  }
+
+  static constexpr llvm::StringLiteral LspEnd = "]]";
+  auto [body, rest] = body_start.split("]]");
+  if (body.size() == body_start.size()) {
+    return ErrorBuilder() << "Missing `" << LspEnd << "` after `" << keyword
+                          << "`";
+  }
+  auto [method_or_id, extra_content] = body.split(":");
+
+  llvm::json::Value parsed_extra_content = nullptr;
+  if (!extra_content.empty()) {
+    std::string extra_content_as_object =
+        llvm::formatv("{{{0}}", extra_content);
+    auto parse_result = llvm::json::parse(extra_content_as_object);
+    if (auto err = parse_result.takeError()) {
+      return ErrorBuilder() << "Error parsing extra content: " << err;
+    }
+    parsed_extra_content = std::move(*parse_result);
+    CARBON_CHECK(parsed_extra_content.kind() == llvm::json::Value::Object);
+    if (extra_content_label == "params" &&
+        method_or_id == "textDocument/didOpen") {
+      CARBON_RETURN_IF_ERROR(
+          AutoFillDidOpenParams(*parsed_extra_content.getAsObject(), splits));
+    }
+  }
+
+  // Form the JSON.
+  RawStringOstream buffer;
+  llvm::json::OStream json(buffer);
+
+  json.object([&] {
+    json.attribute("jsonrpc", "2.0");
+    json.attribute(method_or_id_label, method_or_id);
+
+    if (use_call_id) {
+      json.attribute("id", ++lsp_call_id);
+    }
+    if (parsed_extra_content != nullptr) {
+      if (!extra_content_label.empty()) {
+        json.attribute(extra_content_label, parsed_extra_content);
+      } else {
+        for (const auto& [key, value] : *parsed_extra_content.getAsObject()) {
+          json.attribute(key, value);
+        }
+      }
+    }
+  });
+
+  // Add the Content-Length header. The `2` accounts for extra newlines.
+  int content_length = buffer.size() + 2;
+  auto json_with_header = llvm::formatv("Content-Length: {0}\n\n{1}\n",
+                                        content_length, buffer.TakeStr())
+                              .str();
+  size_t keyword_len = rest.data() - keyword.data();
+  content.replace(keyword_pos, keyword_len, json_with_header);
+  return keyword_pos + json_with_header.size();
+}
+
+// Replaces `[[@0xAB]]` with the raw byte with value 0xAB. Returns the position
+// to start a find for the next keyword.
+static auto ReplaceRawByteKeywordAt(std::string& content, size_t keyword_pos)
+    -> ErrorOr<size_t> {
+  llvm::StringRef content_at_keyword =
+      llvm::StringRef(content).substr(keyword_pos);
+  auto [keyword, rest] = content_at_keyword.split("]]");
+  if (keyword.size() == content_at_keyword.size()) {
+    return ErrorBuilder() << "Missing `]]` after " << keyword.take_front(10)
+                          << "`";
+  }
+
+  unsigned char byte_value;
+  if (keyword.substr(std::size("[[@0x") - 1).getAsInteger(16, byte_value)) {
+    return ErrorBuilder() << "Invalid raw byte specifier `"
+                          << keyword.take_front(10) << "`";
+  }
+
+  content.replace(keyword_pos, keyword.size() + 2, 1, byte_value);
+  return keyword_pos + 1;
+}
+
+// Replaces the keyword at the given position. Returns the position to start a
+// find for the next keyword.
+static auto ReplaceContentKeywordAt(std::string& content, size_t keyword_pos,
+                                    llvm::StringRef test_name, int& lsp_call_id,
+                                    llvm::ArrayRef<TestFile::Split> splits)
+    -> ErrorOr<size_t> {
+  auto keyword = llvm::StringRef(content).substr(keyword_pos);
+
+  // Line replacements aren't handled here.
+  static constexpr llvm::StringLiteral Line = "[[@LINE";
+  if (keyword.starts_with(Line)) {
+    // Just move past the prefix to find the next one.
+    return keyword_pos + Line.size();
+  }
+
+  // Replaced with the actual test name.
+  static constexpr llvm::StringLiteral TestName = "[[@TEST_NAME]]";
+  if (keyword.starts_with(TestName)) {
+    content.replace(keyword_pos, TestName.size(), test_name);
+    return keyword_pos + test_name.size();
+  }
+
+  if (keyword.starts_with("[[@LSP")) {
+    return ReplaceLspKeywordAt(content, keyword_pos, lsp_call_id, splits);
+  }
+
+  if (keyword.starts_with("[[@0x")) {
+    return ReplaceRawByteKeywordAt(content, keyword_pos);
+  }
+
+  return ErrorBuilder() << "Unexpected use of `[[@` at `"
+                        << keyword.substr(0, 5) << "`";
+}
+
+// Replaces the content keywords.
+//
+// This handles content keywords such as [[@TEST_NAME]] and [[@LSP*]]. Unknown
+// content keywords are diagnosed.
+static auto ReplaceContentKeywords(llvm::StringRef filename,
+                                   std::string& content,
+                                   llvm::ArrayRef<TestFile::Split> splits)
+    -> ErrorOr<Success> {
+  static constexpr llvm::StringLiteral Prefix = "[[@";
+
+  auto keyword_pos = content.find(Prefix);
+  // Return early if not finding anything.
+  if (keyword_pos == std::string::npos) {
+    return Success();
+  }
+
+  // Construct the test name by getting the base name without the extension,
+  // then removing any "fail_" or "todo_" prefixes.
+  llvm::StringRef test_name = filename;
+  if (auto last_slash = test_name.rfind("/");
+      last_slash != llvm::StringRef::npos) {
+    test_name = test_name.substr(last_slash + 1);
+  }
+  if (auto ext_dot = test_name.find("."); ext_dot != llvm::StringRef::npos) {
+    test_name = test_name.substr(0, ext_dot);
+  }
+  // Note this also handles `fail_todo_` and `todo_fail_`.
+  test_name.consume_front("todo_");
+  test_name.consume_front("fail_");
+  test_name.consume_front("todo_");
+
+  // A counter for LSP calls.
+  int lsp_call_id = 0;
+  while (keyword_pos != std::string::npos) {
+    CARBON_ASSIGN_OR_RETURN(
+        auto keyword_end,
+        ReplaceContentKeywordAt(content, keyword_pos, test_name, lsp_call_id,
+                                splits));
+    keyword_pos = content.find(Prefix, keyword_end);
+  }
+  return Success();
+}
+
+// Adds a file. Used for both split and unsplit test files.
+static auto AddSplit(llvm::StringRef filename, std::string& content,
+                     llvm::SmallVector<TestFile::Split>& file_splits)
+    -> ErrorOr<Success> {
+  CARBON_RETURN_IF_ERROR(
+      ReplaceContentKeywords(filename, content, file_splits));
+  file_splits.push_back(
+      {.filename = filename.str(), .content = std::move(content)});
+  content.clear();
+  return Success();
+}
+
+// Process file split ("---") lines when found. Returns true if the line is
+// consumed. `non_check_lines` is only provided for the main file, and will be
+// null for includes.
+static auto TryConsumeSplit(llvm::StringRef line, llvm::StringRef line_trimmed,
+                            bool missing_autoupdate, int& line_index,
+                            SplitState& split,
+                            llvm::SmallVector<TestFile::Split>& file_splits,
+                            llvm::SmallVector<FileTestLine>* non_check_lines)
+    -> ErrorOr<bool> {
+  if (!line_trimmed.consume_front("// ---")) {
+    if (!split.has_splits() && !line_trimmed.starts_with("//") &&
+        !line_trimmed.empty()) {
+      split.found_code_pre_split = true;
+    }
+
+    // Add the line to the current file's content (which may not be a split
+    // file).
+    split.add_content(line);
+    return false;
+  }
+
+  if (missing_autoupdate) {
+    // If there's a split, all output is appended at the end of each file
+    // before AUTOUPDATE. We may want to change that, but it's not
+    // necessary to handle right now.
+    return Error(
+        "AUTOUPDATE/NOAUTOUPDATE setting must be in "
+        "the first file.");
+  }
+
+  // On a file split, add the previous file, then start a new one.
+  if (split.has_splits()) {
+    CARBON_RETURN_IF_ERROR(
+        AddSplit(split.filename, split.content, file_splits));
+  } else {
+    split.content.clear();
+    if (split.found_code_pre_split) {
+      // For the first split, we make sure there was no content prior.
+      return Error(
+          "When using split files, there must be no content before the first "
+          "split file.");
+    }
+  }
+
+  ++split.file_index;
+  split.filename = line_trimmed.trim();
+  if (split.filename.empty()) {
+    return Error("Missing filename for split.");
+  }
+  // The split line is added to non_check_lines for retention in autoupdate, but
+  // is not added to the test file content.
+  line_index = 0;
+  if (non_check_lines) {
+    non_check_lines->push_back(
+        FileTestLine(split.file_index, line_index, line));
+  }
+  return true;
+}
+
+// Converts a `FileCheck`-style expectation string into a single complete regex
+// string by escaping all regex characters outside of the designated `{{...}}`
+// regex sequences, and switching those to a normal regex sub-pattern syntax.
+static auto ConvertExpectationStringToRegex(std::string& str) -> void {
+  for (int pos = 0; pos < static_cast<int>(str.size());) {
+    switch (str[pos]) {
+      case '(':
+      case ')':
+      case '[':
+      case ']':
+      case '}':
+      case '.':
+      case '^':
+      case '$':
+      case '*':
+      case '+':
+      case '?':
+      case '|':
+      case '\\': {
+        // Escape regex characters.
+        str.insert(pos, "\\");
+        pos += 2;
+        break;
+      }
+      case '{': {
+        if (pos + 1 == static_cast<int>(str.size()) || str[pos + 1] != '{') {
+          // Single `{`, escape it.
+          str.insert(pos, "\\");
+          pos += 2;
+          break;
+        }
+
+        // Replace the `{{...}}` regex syntax with standard `(...)` syntax.
+        str.replace(pos, 2, "(");
+        for (++pos; pos < static_cast<int>(str.size() - 1); ++pos) {
+          if (str[pos] == '}' && str[pos + 1] == '}') {
+            str.replace(pos, 2, ")");
+            ++pos;
+            break;
+          }
+        }
+        break;
+      }
+      default: {
+        ++pos;
+      }
+    }
+  }
+}
+
+// Transforms an expectation on a given line from `FileCheck` syntax into a
+// standard regex matcher.
+static auto TransformExpectation(int line_index, llvm::StringRef in)
+    -> ErrorOr<Matcher<std::string>> {
+  if (in.empty()) {
+    return Matcher<std::string>{StrEq("")};
+  }
+  if (!in.consume_front(" ")) {
+    return ErrorBuilder() << "Malformated CHECK line: " << in;
+  }
+
+  // Check early if we have a regex component as we can avoid building an
+  // expensive matcher when not using those.
+  bool has_regex = in.find("{{") != llvm::StringRef::npos;
+
+  // Now scan the string and expand any keywords. Note that this needs to be
+  // `size_t` to correctly store `npos`.
+  size_t keyword_pos = in.find("[[");
+
+  // If there are neither keywords nor regex sequences, we can match the
+  // incoming string directly.
+  if (!has_regex && keyword_pos == llvm::StringRef::npos) {
+    return Matcher<std::string>{StrEq(in)};
+  }
+
+  std::string str = in.str();
+
+  // First expand the keywords.
+  while (keyword_pos != std::string::npos) {
+    llvm::StringRef line_keyword_cursor =
+        llvm::StringRef(str).substr(keyword_pos);
+    CARBON_CHECK(line_keyword_cursor.consume_front("[["));
+
+    static constexpr llvm::StringLiteral LineKeyword = "@LINE";
+    if (!line_keyword_cursor.consume_front(LineKeyword)) {
+      return ErrorBuilder()
+             << "Unexpected [[, should be {{\\[\\[}} at `"
+             << line_keyword_cursor.substr(0, 5) << "` in: " << in;
+    }
+
+    // Allow + or - here; consumeInteger handles -.
+    line_keyword_cursor.consume_front("+");
+    int offset;
+    // consumeInteger returns true for errors, not false.
+    if (line_keyword_cursor.consumeInteger(10, offset) ||
+        !line_keyword_cursor.consume_front("]]")) {
+      return ErrorBuilder()
+             << "Unexpected @LINE offset at `"
+             << line_keyword_cursor.substr(0, 5) << "` in: " << in;
+    }
+    std::string int_str = llvm::Twine(line_index + offset).str();
+    int remove_len = (line_keyword_cursor.data() - str.data()) - keyword_pos;
+    str.replace(keyword_pos, remove_len, int_str);
+    keyword_pos += int_str.size();
+    // Find the next keyword start or the end of the string.
+    keyword_pos = str.find("[[", keyword_pos);
+  }
+
+  // If there was no regex, we can directly match the adjusted string.
+  if (!has_regex) {
+    return Matcher<std::string>{StrEq(str)};
+  }
+
+  // Otherwise, we need to turn the entire string into a regex by escaping
+  // things outside the regex region and transforming the regex region into a
+  // normal syntax.
+  ConvertExpectationStringToRegex(str);
+  return Matcher<std::string>{MatchesRegex(str)};
+}
+
+// Once all content is processed, do any remaining split processing.
+static auto FinishSplit(llvm::StringRef filename, bool is_include_file,
+                        SplitState& split,
+                        llvm::SmallVector<TestFile::Split>& file_splits)
+    -> ErrorOr<Success> {
+  if (split.has_splits()) {
+    return AddSplit(split.filename, split.content, file_splits);
+  } else {
+    // If no file splitting happened, use the main file as the test file.
+    // There will always be a `/` unless tests are in the repo root.
+    std::string split_name = std::filesystem::path(filename.str()).filename();
+    if (is_include_file) {
+      split_name.insert(0, "include_files/");
+    }
+    return AddSplit(split_name, split.content, file_splits);
+  }
+}
+
+// Process CHECK lines when found. Returns true if the line is consumed.
+// `expected_stdout` and `expected_stderr` are null in included files, where
+// it's an error to use `CHECK`.
+static auto TryConsumeCheck(
+    bool running_autoupdate, int line_index, llvm::StringRef line,
+    llvm::StringRef line_trimmed,
+    llvm::SmallVector<testing::Matcher<std::string>>* expected_stdout,
+    llvm::SmallVector<testing::Matcher<std::string>>* expected_stderr)
+    -> ErrorOr<bool> {
+  if (!line_trimmed.consume_front("// CHECK")) {
+    return false;
+  }
+
+  if (!expected_stdout) {
+    return ErrorBuilder() << "Included files can't add CHECKs: "
+                          << line_trimmed;
+  }
+
+  // Don't build expectations when doing an autoupdate. We don't want to
+  // break the autoupdate on an invalid CHECK line.
+  if (!running_autoupdate) {
+    llvm::SmallVector<Matcher<std::string>>* expected;
+    if (line_trimmed.consume_front(":STDOUT:")) {
+      expected = expected_stdout;
+    } else if (line_trimmed.consume_front(":STDERR:")) {
+      expected = expected_stderr;
+    } else {
+      return ErrorBuilder() << "Unexpected CHECK in input: " << line.str();
+    }
+    CARBON_ASSIGN_OR_RETURN(Matcher<std::string> check_matcher,
+                            TransformExpectation(line_index, line_trimmed));
+    expected->push_back(check_matcher);
+  }
+  return true;
+}
+
+// Processes ARGS and EXTRA-ARGS lines when found. Returns true if the line is
+// consumed.
+static auto TryConsumeArgs(llvm::StringRef line, llvm::StringRef line_trimmed,
+                           llvm::SmallVector<std::string>& args)
+    -> ErrorOr<bool> {
+  if (!line_trimmed.consume_front("// ARGS: ")) {
+    return false;
+  }
+
+  if (!args.empty()) {
+    return ErrorBuilder() << "ARGS specified multiple times: " << line.str();
+  }
+
+  // Split the line into arguments.
+  std::pair<llvm::StringRef, llvm::StringRef> cursor =
+      llvm::getToken(line_trimmed);
+  while (!cursor.first.empty()) {
+    args.push_back(std::string(cursor.first));
+    cursor = llvm::getToken(cursor.second);
+  }
+
+  return true;
+}
+static auto TryConsumeExtraArgs(llvm::StringRef line_trimmed,
+                                llvm::SmallVector<std::string>& extra_args)
+    -> ErrorOr<bool> {
+  if (!line_trimmed.consume_front("// EXTRA-ARGS: ")) {
+    return false;
+  }
+
+  // Split the line into arguments.
+  std::pair<llvm::StringRef, llvm::StringRef> cursor =
+      llvm::getToken(line_trimmed);
+  while (!cursor.first.empty()) {
+    extra_args.push_back(std::string(cursor.first));
+    cursor = llvm::getToken(cursor.second);
+  }
+
+  return true;
+}
+
+static auto TryConsumeIncludeFile(llvm::StringRef line_trimmed,
+                                  llvm::SmallVector<std::string>& include_files)
+    -> ErrorOr<bool> {
+  if (!line_trimmed.consume_front("// INCLUDE-FILE: ")) {
+    return false;
+  }
+
+  include_files.push_back(line_trimmed.str());
+  return true;
+}
+
+// Processes AUTOUPDATE lines when found. Returns true if the line is consumed.
+// `found_autoupdate` and `autoupdate_line_number` are only provided for the
+// main file; it's an error to have autoupdate in included files.
+static auto TryConsumeAutoupdate(int line_index, llvm::StringRef line_trimmed,
+                                 bool* found_autoupdate,
+                                 std::optional<int>* autoupdate_line_number)
+    -> ErrorOr<bool> {
+  static constexpr llvm::StringLiteral Autoupdate = "// AUTOUPDATE";
+  static constexpr llvm::StringLiteral NoAutoupdate = "// NOAUTOUPDATE";
+  if (line_trimmed != Autoupdate && line_trimmed != NoAutoupdate) {
+    return false;
+  }
+  if (!found_autoupdate) {
+    return ErrorBuilder() << "Included files can't control autoupdate: "
+                          << line_trimmed;
+  }
+  if (*found_autoupdate) {
+    return Error("Multiple AUTOUPDATE/NOAUTOUPDATE settings found");
+  }
+  *found_autoupdate = true;
+  if (line_trimmed == Autoupdate) {
+    *autoupdate_line_number = line_index;
+  }
+  return true;
+}
+
+// Processes SET-* lines when found. Returns true if the line is consumed.
+// If `flag` is null, we're in an included file where the flag can't be set.
+static auto TryConsumeSetFlag(llvm::StringRef line_trimmed,
+                              llvm::StringLiteral flag_name, bool* flag)
+    -> ErrorOr<bool> {
+  if (!line_trimmed.consume_front("// ") || line_trimmed != flag_name) {
+    return false;
+  }
+  if (!flag) {
+    return ErrorBuilder() << "Included files can't set flag: " << line_trimmed;
+  }
+  if (*flag) {
+    return ErrorBuilder() << flag_name << " was specified multiple times";
+  }
+  *flag = true;
+  return true;
+}
+
+// Process content for either the main file (with `test_file` and
+// `found_autoupdate` provided) or an included file (with those arguments null).
+//
+// - `found_autoupdate` is set to true when either `AUTOUPDATE` or
+//   `NOAUTOUPDATE` are found.
+// - `args` is set from `ARGS`.
+// - `extra_args` accumulates `EXTRA-ARGS`.
+// - `splits` accumulates split form for the test (`// --- <filename>`, or the
+//   full file named as `filename` when there are no splits in the file).
+// - `include_files` accumulates `INCLUDE-FILE`.
+static auto ProcessFileContent(llvm::StringRef filename,
+                               llvm::StringRef content_cursor,
+                               bool running_autoupdate, TestFile* test_file,
+                               bool* found_autoupdate,
+                               llvm::SmallVector<std::string>& args,
+                               llvm::SmallVector<std::string>& extra_args,
+                               llvm::SmallVector<TestFile::Split>& splits,
+                               llvm::SmallVector<std::string>& include_files)
+    -> ErrorOr<Success> {
+  // The index in the current test file. Will be reset on splits.
+  int line_index = 0;
+
+  // When autoupdating, we track whether we're inside conflict markers.
+  // Otherwise conflict markers are errors.
+  bool inside_conflict_marker = false;
+
+  SplitState split_state;
+
+  while (!content_cursor.empty()) {
+    auto [line, next_cursor] = content_cursor.split("\n");
+    content_cursor = next_cursor;
+    auto line_trimmed = line.ltrim();
+
+    bool is_consumed = false;
+
+    CARBON_ASSIGN_OR_RETURN(
+        is_consumed,
+        TryConsumeConflictMarker(running_autoupdate, line, line_trimmed,
+                                 inside_conflict_marker));
+    if (is_consumed) {
+      continue;
+    }
+
+    // At this point, remaining lines are part of the test input.
+
+    // We need to consume a split, but the main file has a little more handling.
+    bool missing_autoupdate = false;
+    llvm::SmallVector<FileTestLine>* non_check_lines = nullptr;
+    if (test_file) {
+      missing_autoupdate = !*found_autoupdate;
+      non_check_lines = &test_file->non_check_lines;
+    }
+    CARBON_ASSIGN_OR_RETURN(
+        is_consumed,
+        TryConsumeSplit(line, line_trimmed, missing_autoupdate, line_index,
+                        split_state, splits, non_check_lines));
+    if (is_consumed) {
+      continue;
+    }
+
+    ++line_index;
+
+    // TIP lines have no impact on validation.
+    if (line_trimmed.starts_with("// TIP:")) {
+      continue;
+    }
+
+    CARBON_ASSIGN_OR_RETURN(
+        is_consumed,
+        TryConsumeCheck(running_autoupdate, line_index, line, line_trimmed,
+                        test_file ? &test_file->expected_stdout : nullptr,
+                        test_file ? &test_file->expected_stderr : nullptr));
+    if (is_consumed) {
+      continue;
+    }
+
+    if (test_file) {
+      // At this point, lines are retained as non-CHECK lines.
+      test_file->non_check_lines.push_back(
+          FileTestLine(split_state.file_index, line_index, line));
+    }
+
+    CARBON_ASSIGN_OR_RETURN(is_consumed,
+                            TryConsumeArgs(line, line_trimmed, args));
+    if (is_consumed) {
+      continue;
+    }
+    CARBON_ASSIGN_OR_RETURN(is_consumed,
+                            TryConsumeExtraArgs(line_trimmed, extra_args));
+    if (is_consumed) {
+      continue;
+    }
+    CARBON_ASSIGN_OR_RETURN(is_consumed,
+                            TryConsumeIncludeFile(line_trimmed, include_files));
+    if (is_consumed) {
+      continue;
+    }
+
+    CARBON_ASSIGN_OR_RETURN(
+        is_consumed,
+        TryConsumeAutoupdate(
+            line_index, line_trimmed, found_autoupdate,
+            test_file ? &test_file->autoupdate_line_number : nullptr));
+    if (is_consumed) {
+      continue;
+    }
+    CARBON_ASSIGN_OR_RETURN(
+        is_consumed,
+        TryConsumeSetFlag(
+            line_trimmed, "SET-CAPTURE-CONSOLE-OUTPUT",
+            test_file ? &test_file->capture_console_output : nullptr));
+    if (is_consumed) {
+      continue;
+    }
+    CARBON_ASSIGN_OR_RETURN(
+        is_consumed,
+        TryConsumeSetFlag(line_trimmed, "SET-CHECK-SUBSET",
+                          test_file ? &test_file->check_subset : nullptr));
+    if (is_consumed) {
+      continue;
+    }
+  }
+
+  CARBON_RETURN_IF_ERROR(FinishSplit(filename, /*is_include_file=*/!test_file,
+                                     split_state, splits));
+
+  if (test_file) {
+    test_file->has_splits = split_state.has_splits();
+  }
+  return Success();
+}
+
+auto ProcessTestFile(llvm::StringRef test_name, bool running_autoupdate)
+    -> ErrorOr<TestFile> {
+  TestFile test_file;
+
+  // Store the original content, to avoid a read when autoupdating.
+  CARBON_ASSIGN_OR_RETURN(test_file.input_content, ReadFile(test_name.str()));
+
+  // Whether either AUTOUDPATE or NOAUTOUPDATE was found.
+  bool found_autoupdate = false;
+
+  // INCLUDE-FILE uses, accumulated across both the main file and any includes
+  // (recursively).
+  llvm::SmallVector<std::string> include_files;
+
+  // Store the main file's `EXTRA-ARGS` so that they can be put after any that
+  // come from `INCLUDE-FILE`.
+  llvm::SmallVector<std::string> main_extra_args;
+
+  // Process the main file.
+  CARBON_RETURN_IF_ERROR(ProcessFileContent(
+      test_name, test_file.input_content, running_autoupdate, &test_file,
+      &found_autoupdate, test_file.test_args, main_extra_args,
+      test_file.file_splits, include_files));
+
+  if (!found_autoupdate) {
+    return ErrorBuilder() << "Missing AUTOUPDATE/NOAUTOUPDATE setting";
+  }
+
+  constexpr llvm::StringLiteral AutoupdateSplit = "AUTOUPDATE-SPLIT";
+
+  // Validate AUTOUPDATE-SPLIT use, and remove it from test files if present.
+  if (test_file.has_splits) {
+    for (const auto& test_file :
+         llvm::ArrayRef(test_file.file_splits).drop_back()) {
+      if (test_file.filename == AutoupdateSplit) {
+        return Error("AUTOUPDATE-SPLIT must be the last split");
+      }
+    }
+    if (test_file.file_splits.back().filename == AutoupdateSplit) {
+      if (!test_file.autoupdate_line_number) {
+        return Error("AUTOUPDATE-SPLIT requires AUTOUPDATE");
+      }
+      test_file.autoupdate_split = true;
+      test_file.file_splits.pop_back();
+    }
+  }
+
+  // Assume there is always a suffix `\n` in output.
+  if (!test_file.expected_stdout.empty()) {
+    test_file.expected_stdout.push_back(StrEq(""));
+  }
+  if (!test_file.expected_stderr.empty()) {
+    test_file.expected_stderr.push_back(StrEq(""));
+  }
+
+  // Process includes. This can add entries to `include_files`.
+  Set<std::string> processed_includes;
+  for (size_t i = 0; i < include_files.size(); ++i) {
+    const auto& filename = include_files[i];
+    if (!processed_includes.Insert(filename).is_inserted()) {
+      // Ignore repeated includes, mainly so that included files can include the
+      // same file (i.e., repeated indirectly).
+      continue;
+    }
+    CARBON_ASSIGN_OR_RETURN(std::string content, ReadFile(filename));
+    // Note autoupdate never touches included files.
+    CARBON_RETURN_IF_ERROR(ProcessFileContent(
+        filename, content, /*running_autoupdate=*/false,
+        /*test_file=*/nullptr,
+        /*found_autoupdate=*/nullptr, test_file.test_args, test_file.extra_args,
+        test_file.include_file_splits, include_files));
+  }
+
+  for (const auto& split : test_file.include_file_splits) {
+    if (split.filename == AutoupdateSplit) {
+      return Error("AUTOUPDATE-SPLIT is disallowed in included files");
+    }
+  }
+
+  // Copy over `EXTRA-ARGS` from the main file (after includes).
+  test_file.extra_args.append(main_extra_args);
+
+  return std::move(test_file);
+}
+
+}  // namespace Carbon::Testing

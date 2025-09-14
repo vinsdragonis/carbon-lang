@@ -8,35 +8,33 @@
 #include "toolchain/diagnostics/null_diagnostics.h"
 #include "toolchain/lex/numeric_literal.h"
 
-namespace Carbon::Testing {
+namespace Carbon::Lex {
 namespace {
-
-using Lex::NumericLiteral;
 
 static void BM_Lex_Float(benchmark::State& state) {
   for (auto _ : state) {
-    CARBON_CHECK(NumericLiteral::Lex("0.000001"));
+    CARBON_CHECK(NumericLiteral::Lex("0.000001", true));
   }
 }
 
-static void BM_Lex_Integer(benchmark::State& state) {
+static void BM_Lex_Int(benchmark::State& state) {
   for (auto _ : state) {
-    CARBON_CHECK(NumericLiteral::Lex("1_234_567_890"));
+    CARBON_CHECK(NumericLiteral::Lex("1_234_567_890", true));
   }
 }
 
 static void BM_ComputeValue_Float(benchmark::State& state) {
-  auto val = NumericLiteral::Lex("0.000001");
+  auto val = NumericLiteral::Lex("0.000001", true);
   CARBON_CHECK(val);
-  auto emitter = NullDiagnosticEmitter<const char*>();
+  auto& emitter = Diagnostics::NullEmitter<const char*>();
   for (auto _ : state) {
     val->ComputeValue(emitter);
   }
 }
 
-static void BM_ComputeValue_Integer(benchmark::State& state) {
-  auto val = NumericLiteral::Lex("1_234_567_890");
-  auto emitter = NullDiagnosticEmitter<const char*>();
+static void BM_ComputeValue_Int(benchmark::State& state) {
+  auto val = NumericLiteral::Lex("1_234_567_890", true);
+  auto& emitter = Diagnostics::NullEmitter<const char*>();
   CARBON_CHECK(val);
   for (auto _ : state) {
     val->ComputeValue(emitter);
@@ -44,9 +42,9 @@ static void BM_ComputeValue_Integer(benchmark::State& state) {
 }
 
 BENCHMARK(BM_Lex_Float);
-BENCHMARK(BM_Lex_Integer);
+BENCHMARK(BM_Lex_Int);
 BENCHMARK(BM_ComputeValue_Float);
-BENCHMARK(BM_ComputeValue_Integer);
+BENCHMARK(BM_ComputeValue_Int);
 
 }  // namespace
-}  // namespace Carbon::Testing
+}  // namespace Carbon::Lex

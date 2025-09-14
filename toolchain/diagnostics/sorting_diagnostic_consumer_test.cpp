@@ -11,55 +11,53 @@
 #include "toolchain/diagnostics/diagnostic_emitter.h"
 #include "toolchain/diagnostics/mocks.h"
 
-namespace Carbon {
+namespace Carbon::Diagnostics {
 namespace {
 
-using ::Carbon::Testing::IsDiagnostic;
+using ::Carbon::Testing::IsSingleDiagnostic;
+using ::testing::_;
 using ::testing::InSequence;
 
-CARBON_DIAGNOSTIC(TestDiagnostic, Error, "{0}", llvm::StringRef);
+CARBON_DIAGNOSTIC(TestDiagnostic, Error, "M{0}", int);
 
-struct FakeDiagnosticLocationTranslator
-    : DiagnosticLocationTranslator<DiagnosticLocation> {
-  auto GetLocation(DiagnosticLocation loc) -> DiagnosticLocation override {
-    return loc;
+class FakeEmitter : public Emitter<int32_t> {
+ public:
+  using Emitter::Emitter;
+
+ protected:
+  auto ConvertLoc(int32_t last_byte_offset, ContextFnT /*context_fn*/) const
+      -> ConvertedLoc override {
+    return {.loc = {}, .last_byte_offset = last_byte_offset};
   }
 };
 
-TEST(SortedDiagnosticEmitterTest, SortErrors) {
-  FakeDiagnosticLocationTranslator translator;
+TEST(SortedEmitterTest, SortErrors) {
   Testing::MockDiagnosticConsumer consumer;
-  SortingDiagnosticConsumer sorting_consumer(consumer);
-  DiagnosticEmitter<DiagnosticLocation> emitter(translator, sorting_consumer);
+  SortingConsumer sorting_consumer(consumer);
+  FakeEmitter emitter(&sorting_consumer);
 
-  emitter.Emit({"f", "line", 2, 1}, TestDiagnostic, "M1");
-  emitter.Emit({"f", "line", 1, 1}, TestDiagnostic, "M2");
-  emitter.Emit({"f", "line", 1, 3}, TestDiagnostic, "M3");
-  emitter.Emit({"f", "line", 3, 4}, TestDiagnostic, "M4");
-  emitter.Emit({"f", "line", 3, 2}, TestDiagnostic, "M5");
-  emitter.Emit({"f", "line", 3, 2}, TestDiagnostic, "M6");
+  emitter.Emit(1, TestDiagnostic, 1);
+  emitter.Emit(-1, TestDiagnostic, 2);
+  emitter.Emit(0, TestDiagnostic, 3);
+  emitter.Emit(4, TestDiagnostic, 4);
+  emitter.Emit(3, TestDiagnostic, 5);
+  emitter.Emit(3, TestDiagnostic, 6);
 
   InSequence s;
-  EXPECT_CALL(consumer, HandleDiagnostic(
-                            IsDiagnostic(DiagnosticKind::TestDiagnostic,
-                                         DiagnosticLevel::Error, 1, 1, "M2")));
-  EXPECT_CALL(consumer, HandleDiagnostic(
-                            IsDiagnostic(DiagnosticKind::TestDiagnostic,
-                                         DiagnosticLevel::Error, 1, 3, "M3")));
-  EXPECT_CALL(consumer, HandleDiagnostic(
-                            IsDiagnostic(DiagnosticKind::TestDiagnostic,
-                                         DiagnosticLevel::Error, 2, 1, "M1")));
-  EXPECT_CALL(consumer, HandleDiagnostic(
-                            IsDiagnostic(DiagnosticKind::TestDiagnostic,
-                                         DiagnosticLevel::Error, 3, 2, "M5")));
-  EXPECT_CALL(consumer, HandleDiagnostic(
-                            IsDiagnostic(DiagnosticKind::TestDiagnostic,
-                                         DiagnosticLevel::Error, 3, 2, "M6")));
-  EXPECT_CALL(consumer, HandleDiagnostic(
-                            IsDiagnostic(DiagnosticKind::TestDiagnostic,
-                                         DiagnosticLevel::Error, 3, 4, "M4")));
+  EXPECT_CALL(consumer, HandleDiagnostic(IsSingleDiagnostic(
+                            Kind::TestDiagnostic, Level::Error, _, _, "M2")));
+  EXPECT_CALL(consumer, HandleDiagnostic(IsSingleDiagnostic(
+                            Kind::TestDiagnostic, Level::Error, _, _, "M3")));
+  EXPECT_CALL(consumer, HandleDiagnostic(IsSingleDiagnostic(
+                            Kind::TestDiagnostic, Level::Error, _, _, "M1")));
+  EXPECT_CALL(consumer, HandleDiagnostic(IsSingleDiagnostic(
+                            Kind::TestDiagnostic, Level::Error, _, _, "M5")));
+  EXPECT_CALL(consumer, HandleDiagnostic(IsSingleDiagnostic(
+                            Kind::TestDiagnostic, Level::Error, _, _, "M6")));
+  EXPECT_CALL(consumer, HandleDiagnostic(IsSingleDiagnostic(
+                            Kind::TestDiagnostic, Level::Error, _, _, "M4")));
   sorting_consumer.Flush();
 }
 
 }  // namespace
-}  // namespace Carbon
+}  // namespace Carbon::Diagnostics

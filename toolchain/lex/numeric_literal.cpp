@@ -4,36 +4,22 @@
 
 #include "toolchain/lex/numeric_literal.h"
 
+#include <algorithm>
 #include <bitset>
+#include <iterator>
+#include <optional>
 
 #include "common/check.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/FormatVariadicDetails.h"
+#include "toolchain/diagnostics/format_providers.h"
 #include "toolchain/lex/character_set.h"
 #include "toolchain/lex/helpers.h"
 
 namespace Carbon::Lex {
 
-// Adapts Radix for use with formatv.
-// NOTE: clangd may see this as unused, but it will be invoked by diagnostics.
-// We don't do anything to disable the warning because clang compile invocations
-// should warn if it's actually unused.
-static auto operator<<(llvm::raw_ostream& out, NumericLiteral::Radix radix)
-    -> llvm::raw_ostream& {
-  switch (radix) {
-    case NumericLiteral::Radix::Binary:
-      out << "binary";
-      break;
-    case NumericLiteral::Radix::Decimal:
-      out << "decimal";
-      break;
-    case NumericLiteral::Radix::Hexadecimal:
-      out << "hexadecimal";
-      break;
-  }
-  return out;
-}
-
-auto NumericLiteral::Lex(llvm::StringRef source_text)
+auto NumericLiteral::Lex(llvm::StringRef source_text,
+                         bool can_form_real_literal)
     -> std::optional<NumericLiteral> {
   NumericLiteral result;
 
@@ -64,8 +50,8 @@ auto NumericLiteral::Lex(llvm::StringRef source_text)
 
     // Exactly one `.` can be part of the literal, but only if it's followed by
     // an alphanumeric character.
-    if (c == '.' && i + 1 != n && IsAlnum(source_text[i + 1]) &&
-        !seen_radix_point) {
+    if (c == '.' && can_form_real_literal && i + 1 != n &&
+        IsAlnum(source_text[i + 1]) && !seen_radix_point) {
       result.radix_point_ = i;
       seen_radix_point = true;
       continue;
@@ -80,7 +66,7 @@ auto NumericLiteral::Lex(llvm::StringRef source_text)
         IsAlnum(source_text[i + 1])) {
       // This is not possible because we don't update result.exponent after we
       // see a '+' or '-'.
-      CARBON_CHECK(!seen_plus_minus) << "should only consume one + or -";
+      CARBON_CHECK(!seen_plus_minus, "should only consume one + or -");
       seen_plus_minus = true;
       continue;
     }
@@ -105,9 +91,9 @@ auto NumericLiteral::Lex(llvm::StringRef source_text)
 // either diagnosing or extracting its meaning.
 class NumericLiteral::Parser {
  public:
-  Parser(DiagnosticEmitter<const char*>& emitter, NumericLiteral literal);
+  Parser(Diagnostics::Emitter<const char*>& emitter, NumericLiteral literal);
 
-  auto IsInteger() -> bool {
+  auto IsInt() -> bool {
     return literal_.radix_point_ == static_cast<int>(literal_.text_.size());
   }
 
@@ -136,14 +122,12 @@ class NumericLiteral::Parser {
   auto CheckDigitSequence(llvm::StringRef text, Radix radix,
                           bool allow_digit_separators = true)
       -> CheckDigitSequenceResult;
-  auto CheckDigitSeparatorPlacement(llvm::StringRef text, Radix radix,
-                                    int num_digit_separators) -> void;
   auto CheckLeadingZero() -> bool;
   auto CheckIntPart() -> bool;
   auto CheckFractionalPart() -> bool;
   auto CheckExponentPart() -> bool;
 
-  DiagnosticEmitter<const char*>& emitter_;
+  Diagnostics::Emitter<const char*>& emitter_;
   NumericLiteral literal_;
 
   // The radix of the literal: 2, 10, or 16, for a prefix of '0b', no prefix,
@@ -166,7 +150,7 @@ class NumericLiteral::Parser {
   bool exponent_is_negative_ = false;
 };
 
-NumericLiteral::Parser::Parser(DiagnosticEmitter<const char*>& emitter,
+NumericLiteral::Parser::Parser(Diagnostics::Emitter<const char*>& emitter,
                                NumericLiteral literal)
     : emitter_(emitter), literal_(literal) {
   int_part_ = literal.text_.substr(0, literal.radix_point_);
@@ -200,14 +184,13 @@ auto NumericLiteral::Parser::Check() -> bool {
 // parsing 123.456e7, we want to decompose it into an integer mantissa
 // (123456) and an exponent (7 - 3 = 4), and this routine is given the
 // "123.456" to parse as the mantissa.
-static auto ParseInteger(llvm::StringRef digits, NumericLiteral::Radix radix,
-                         bool needs_cleaning) -> llvm::APInt {
+static auto ParseInt(llvm::StringRef digits, NumericLiteral::Radix radix,
+                     bool needs_cleaning) -> llvm::APInt {
   llvm::SmallString<32> cleaned;
   if (needs_cleaning) {
     cleaned.reserve(digits.size());
-    std::remove_copy_if(digits.begin(), digits.end(),
-                        std::back_inserter(cleaned),
-                        [](char c) { return c == '_' || c == '.'; });
+    llvm::copy_if(digits, std::back_inserter(cleaned),
+                  [](char c) { return c != '_' && c != '.'; });
     digits = cleaned;
   }
 
@@ -219,9 +202,9 @@ static auto ParseInteger(llvm::StringRef digits, NumericLiteral::Radix radix,
 }
 
 auto NumericLiteral::Parser::GetMantissa() -> llvm::APInt {
-  const char* end = IsInteger() ? int_part_.end() : fract_part_.end();
+  const char* end = IsInt() ? int_part_.end() : fract_part_.end();
   llvm::StringRef digits(int_part_.begin(), end - int_part_.begin());
-  return ParseInteger(digits, radix_, mantissa_needs_cleaning_);
+  return ParseInt(digits, radix_, mantissa_needs_cleaning_);
 }
 
 auto NumericLiteral::Parser::GetExponent() -> llvm::APInt {
@@ -230,7 +213,7 @@ auto NumericLiteral::Parser::GetExponent() -> llvm::APInt {
   llvm::APInt exponent(64, 0);
   if (!exponent_part_.empty()) {
     exponent =
-        ParseInteger(exponent_part_, Radix::Decimal, exponent_needs_cleaning_);
+        ParseInt(exponent_part_, Radix::Decimal, exponent_needs_cleaning_);
 
     // The exponent is a signed integer, and the number we just parsed is
     // non-negative, so ensure we have a wide enough representation to
@@ -301,90 +284,42 @@ auto NumericLiteral::Parser::CheckDigitSequence(llvm::StringRef text,
       if (!allow_digit_separators || i == 0 || text[i - 1] == '_' ||
           i + 1 == n) {
         CARBON_DIAGNOSTIC(InvalidDigitSeparator, Error,
-                          "Misplaced digit separator in numeric literal.");
+                          "misplaced digit separator in numeric literal");
         emitter_.Emit(text.begin() + 1, InvalidDigitSeparator);
       }
       ++num_digit_separators;
       continue;
     }
 
-    CARBON_DIAGNOSTIC(InvalidDigit, Error,
-                      "Invalid digit '{0}' in {1} numeric literal.", char,
-                      NumericLiteral::Radix);
-    emitter_.Emit(text.begin() + i, InvalidDigit, c, radix);
+    CARBON_DIAGNOSTIC(
+        InvalidDigit, Error,
+        "invalid digit '{0}' in {1:=2:binary|=10:decimal|=16:hexadecimal} "
+        "numeric literal",
+        char, Diagnostics::IntAsSelect);
+    emitter_.Emit(text.begin() + i, InvalidDigit, c, static_cast<int>(radix));
     return {.ok = false};
   }
 
   if (num_digit_separators == static_cast<int>(text.size())) {
     CARBON_DIAGNOSTIC(EmptyDigitSequence, Error,
-                      "Empty digit sequence in numeric literal.");
+                      "empty digit sequence in numeric literal");
     emitter_.Emit(text.begin(), EmptyDigitSequence);
     return {.ok = false};
   }
 
-  // Check that digit separators occur in exactly the expected positions.
-  if (num_digit_separators) {
-    CheckDigitSeparatorPlacement(text, radix, num_digit_separators);
-  }
-
-  if (!CanLexInteger(emitter_, text)) {
+  if (!CanLexInt(emitter_, text)) {
     return {.ok = false};
   }
 
   return {.ok = true, .has_digit_separators = (num_digit_separators != 0)};
 }
 
-// Given a number with digit separators, check that the digit separators are
-// correctly positioned.
-auto NumericLiteral::Parser::CheckDigitSeparatorPlacement(
-    llvm::StringRef text, Radix radix, int num_digit_separators) -> void {
-  CARBON_DCHECK(std::count(text.begin(), text.end(), '_') ==
-                num_digit_separators)
-      << "given wrong number of digit separators: " << num_digit_separators;
-
-  if (radix == Radix::Binary) {
-    // There are no restrictions on digit separator placement for binary
-    // literals.
-    return;
-  }
-
-  auto diagnose_irregular_digit_separators = [&]() {
-    CARBON_DIAGNOSTIC(
-        IrregularDigitSeparators, Error,
-        "Digit separators in {0} number should appear every {1} characters "
-        "from the right.",
-        NumericLiteral::Radix, int);
-    emitter_.Emit(text.begin(), IrregularDigitSeparators, radix,
-                  radix == Radix::Decimal ? 3 : 4);
-  };
-
-  // For decimal and hexadecimal digit sequences, digit separators must form
-  // groups of 3 or 4 digits (4 or 5 characters), respectively.
-  int stride = (radix == Radix::Decimal ? 4 : 5);
-  int remaining_digit_separators = num_digit_separators;
-  const auto* pos = text.end();
-  while (pos - text.begin() >= stride) {
-    pos -= stride;
-    if (*pos != '_') {
-      diagnose_irregular_digit_separators();
-      return;
-    }
-
-    --remaining_digit_separators;
-  }
-
-  // Check there weren't any other digit separators.
-  if (remaining_digit_separators) {
-    diagnose_irregular_digit_separators();
-  }
-};
-
 // Check that we don't have a '0' prefix on a non-zero decimal integer.
 auto NumericLiteral::Parser::CheckLeadingZero() -> bool {
-  if (radix_ == Radix::Decimal && int_part_.startswith("0") &&
+  if (radix_ == Radix::Decimal && int_part_.starts_with("0") &&
       int_part_ != "0") {
     CARBON_DIAGNOSTIC(UnknownBaseSpecifier, Error,
-                      "Unknown base specifier in numeric literal.");
+                      "unknown base specifier in numeric literal");
     emitter_.Emit(int_part_.begin(), UnknownBaseSpecifier);
     return false;
   }
@@ -401,13 +336,13 @@ auto NumericLiteral::Parser::CheckIntPart() -> bool {
 // Check the fractional part (after the '.' and before the exponent, if any)
 // is valid.
 auto NumericLiteral::Parser::CheckFractionalPart() -> bool {
-  if (IsInteger()) {
+  if (IsInt()) {
     return true;
   }
 
   if (radix_ == Radix::Binary) {
     CARBON_DIAGNOSTIC(BinaryRealLiteral, Error,
-                      "Binary real number literals are not supported.");
+                      "binary real number literals are not supported");
     emitter_.Emit(literal_.text_.begin() + literal_.radix_point_,
                   BinaryRealLiteral);
     // Carry on and parse the binary real literal anyway.
@@ -430,7 +365,7 @@ auto NumericLiteral::Parser::CheckExponentPart() -> bool {
   char expected_exponent_kind = (radix_ == Radix::Decimal ? 'e' : 'p');
   if (literal_.text_[literal_.exponent_] != expected_exponent_kind) {
     CARBON_DIAGNOSTIC(WrongRealLiteralExponent, Error,
-                      "Expected '{0}' to introduce exponent.", char);
+                      "expected '{0}' to introduce exponent", char);
     emitter_.Emit(literal_.text_.begin() + literal_.exponent_,
                   WrongRealLiteralExponent, expected_exponent_kind);
     return false;
@@ -442,16 +377,16 @@ auto NumericLiteral::Parser::CheckExponentPart() -> bool {
 }
 
 // Parse the token and compute its value.
-auto NumericLiteral::ComputeValue(DiagnosticEmitter<const char*>& emitter) const
-    -> Value {
+auto NumericLiteral::ComputeValue(
+    Diagnostics::Emitter<const char*>& emitter) const -> Value {
   Parser parser(emitter, *this);
 
   if (!parser.Check()) {
     return UnrecoverableError();
   }
 
-  if (parser.IsInteger()) {
-    return IntegerValue{.value = parser.GetMantissa()};
+  if (parser.IsInt()) {
+    return IntValue{.value = parser.GetMantissa()};
   }
 
   return RealValue{

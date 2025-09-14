@@ -15,16 +15,25 @@ contributions.
 
 -   [Setup commands](#setup-commands)
     -   [Debian or Ubuntu](#debian-or-ubuntu)
+        -   [Installing Bazelisk](#installing-bazelisk)
+        -   [Old `clang` versions](#old-clang-versions)
     -   [macOS](#macos)
 -   [Tools](#tools)
     -   [Main tools](#main-tools)
         -   [Running pre-commit](#running-pre-commit)
     -   [Optional tools](#optional-tools)
+        -   [Using LLDB with VS Code](#using-lldb-with-vs-code)
+        -   [Using GDB with VS Code](#using-gdb-with-vs-code)
     -   [Manually building Clang and LLVM (not recommended)](#manually-building-clang-and-llvm-not-recommended)
+-   [Debugger dumping with LLDB](#debugger-dumping-with-lldb)
 -   [Troubleshooting build issues](#troubleshooting-build-issues)
+    -   [`bazel clean`](#bazel-clean)
     -   [Old LLVM versions](#old-llvm-versions)
     -   [Asking for help](#asking-for-help)
 -   [Troubleshooting debug issues](#troubleshooting-debug-issues)
+    -   [Using LLDB from the command line](#using-lldb-from-the-command-line)
+    -   [Debugging with GDB instead of LLDB](#debugging-with-gdb-instead-of-lldb)
+    -   [Debugging other build modes](#debugging-other-build-modes)
     -   [Debugging on MacOS](#debugging-on-macos)
 
 <!-- tocstop -->
@@ -38,22 +47,27 @@ These commands should help set up a development environment on your machine.
 
 ### Debian or Ubuntu
 
-```
+```shell
 # Update apt.
 sudo apt update
 
+# Check that the `clang` version is at least 19, our minimum version. That needs
+# the number of the `:` in the output to be over 19. For example, `1:19.0-1`.
+apt-cache show clang | grep 'Version:'
+
 # Install tools.
 sudo apt install \
-  bazel \
   clang \
   gh \
   libc++-dev \
+  libc++abi-dev \
   lld \
+  lldb \
   python3 \
-  zlib1g-dev
+  pipx
 
 # Install pre-commit.
-pip3 install pre-commit
+pipx install pre-commit
 
 # Set up git.
 # If you don't already have a fork:
@@ -62,16 +76,47 @@ cd carbon-lang
 pre-commit install
 
 # Run tests.
-bazel test //...:all
+./scripts/run_bazelisk.py test //...:all
 ```
 
-> NOTE: Most LLVM 14+ installs should build Carbon. If you're having issues, see
+#### Installing Bazelisk
+
+Although the `run_bazelisk` script can make it easy to get started, if you're
+frequently building Carbon, it can be a bit much to type. Consider either
+aliasing `bazel` to the `run_bazelisk.py` script, or
+[downloading a bazelisk release](https://github.com/bazelbuild/bazelisk), adding
+it to your `$PATH`, and aliasing `bazel` to it.
+
+#### Old `clang` versions
+
+If the version of `clang` is earlier than 19, you may still have version 19
+available. You can use the following install instead:
+
+```shell
+# Install explicitly versioned Clang tools.
+sudo apt install \
+  clang-19 \
+  libc++-19-dev \
+  libc++abi-19-dev \
+  lld-19 \
+  lldb-19
+
+# In your Carbon checkout, tell Bazel where to find `clang`. You can also
+# export this path as the `CC` environment variable, or add it directly to
+# your `PATH`.
+echo "build --repo_env=CC=$(readlink -f $(which clang-19))" >> user.bazelrc
+```
+
+And if it's not available directly from the distribution, you can install Clang
+tools on Debian/Ubuntu from <https://apt.llvm.org>.
+
+> NOTE: Most LLVM 19+ installs should build Carbon. If you're having issues, see
 > [troubleshooting build issues](#troubleshooting-build-issues).
 
 ### macOS
 
-```
-# Install Hombrew.
+```shell
+# Install Homebrew.
 /bin/bash -c "$(curl -fsSL \
   https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
@@ -82,19 +127,17 @@ brew install \
   bazelisk \
   gh \
   llvm \
-  python@3.10
+  python@3.10 \
+  pre-commit
 
 # IMPORTANT: Make sure `llvm` is added to the PATH! It's separate from `brew`.
-
-# Install pre-commit.
-pip3 install pre-commit
 
 # Set up git.
 gh repo fork --clone carbon-language/carbon-lang
 cd carbon-lang
 pre-commit install
 
-# Run tests.
+# Run tests. Note homebrew makes `bazel` an alias to `bazelisk`.
 bazel test //...:all
 ```
 
@@ -122,28 +165,24 @@ These tools are essential for work on Carbon.
     -   [Homebrew](https://brew.sh/) (for macOS)
         -   To upgrade versions of `brew` packages, it will be necessary to
             periodically run `brew upgrade`.
-    -   [`python3` and `pip3`](https://python.org)
+    -   [Python](https://python.org)
         -   Carbon requires Python 3.9 or newer.
-        -   To upgrade versions of `pip3` packages, it will be necessary to
-            periodically run `pip3 list --outdated`, then
-            `pip3 install -U <package>` to upgrade desired packages.
+        -   To upgrade versions of pip-installed packages, it will be necessary
+            to periodically run `pipx list --outdated`, then
+            `pipx install -U <package>` to upgrade desired packages.
         -   When upgrading, version dependencies may mean packages _should_ be
             outdated, and not be upgraded.
 -   Main tools
     -   [Bazel](https://www.bazel.build/)
-        -   NOTE: See [the bazelisk config](/.bazeliskrc) for a supported
-            version.
-    -   [Bazelisk](https://docs.bazel.build/versions/master/install-bazelisk.html)
-        (for macOS): Handles Bazel versions.
+        -   [Bazelisk](https://docs.bazel.build/versions/master/install-bazelisk.html):
+            Downloads and runs the [configured Bazel version](/.bazelversion).
     -   [Clang](https://clang.llvm.org/) and [LLVM](https://llvm.org/)
-        -   NOTE: Most LLVM 14+ installs should build Carbon. If you're having
+        -   NOTE: Most LLVM 19+ installs should build Carbon. If you're having
             issues, see
             [troubleshooting build issues](#troubleshooting-build-issues).
     -   [gh CLI](https://github.com/cli/cli): Helps with GitHub.
     -   [pre-commit](https://pre-commit.com): Validates and cleans up git
         commits.
--   Libraries
-    -   zlib1g-dev: Used as a library, but not installed on all Linux systems.
 
 #### Running pre-commit
 
@@ -189,13 +228,55 @@ considering if they fit your workflow.
         **either** normal terminals **or** Visual Studio Code to run `bazel`,
         not both in combination. Visual Studio Code can still be used for other
         purposes, such as editing files, without interfering with `bazel`.
-    -   [DevContainers](https://code.visualstudio.com/docs/remote/containers): A
-        way to use Docker for build environments.
-        -   After following the
-            [installation instructions](https://code.visualstudio.com/docs/remote/containers#_installation),
-            you should be prompted to use Carbon's
-            [devcontainer](/.devcontainer/devcontainer.json) with "Reopen in
-            container".
+-   [clangd](https://clangd.llvm.org/installation): An LSP server implementation
+    for C/C++.
+    -   To ensure that `clangd` reports accurate diagnostics. It needs a
+        generated file called `compile_commands.json`. This can be generated by
+        invoking the command below:
+        ```
+        ./scripts/create_compdb.py
+        ```
+        -   **NOTE**: This assumes you have `python` 3 installed on your system.
+-   [`uv`](https://docs.astral.sh/uv/): A fast Python package manager.
+    -   Notably, `uv` supports automatic management of even complex Python
+        dependencies for scripts: https://docs.astral.sh/uv/guides/scripts/
+    -   Installation: https://docs.astral.sh/uv/getting-started/installation/
+
+#### Using LLDB with VS Code
+
+The required setup for LLDB is:
+
+1.  In the `.vscode` subdirectory, symlink `lldb_launch.json` to `launch.json`.
+    For example: `ln -s lldb_launch.json .vscode/launch.json`
+2.  Install the
+    [`llvm-vs-code-extensions.lldb-dap` extension](https://marketplace.visualstudio.com/items?itemName=llvm-vs-code-extensions.lldb-dap).
+3.  In VS Code settings, it may be necessary to set `lldb-dap.executable-path`
+    to the path of `lldb-dap`.
+
+A typical debug session looks like:
+
+1. `bazel build -c dbg //toolchain/testing:file_test`
+2. Open a `.carbon` testdata file to debug. This must be the active file in VS
+   Code.
+3. Go to the "Run and debug" panel in VS Code.
+4. Select and run the `file_test (lldb)` configuration.
+
+#### Using GDB with VS Code
+
+The required setup for GDB is:
+
+1.  In the `.vscode` subdirectory, symlink `gdb_launch.json` to `launch.json`.
+    For example: `ln -s gdb_launch.json .vscode/launch.json`
+2.  Install the
+    [`coolchyni.beyond-debug` extension](https://marketplace.visualstudio.com/items?itemName=coolchyni.beyond-debug).
+
+A typical debug session looks like:
+
+1. `bazel build -c dbg --features=-lldb_flags --features=gdb_flags //toolchain/testing:file_test`
+2. Open a `.carbon` testdata file to debug. This must be the active file in VS
+   Code.
+3. Go to the "Run and debug" panel in VS Code.
+4. Select and run the `file_test (gdb)` configuration.
 
 ### Manually building Clang and LLVM (not recommended)
 
@@ -205,26 +286,46 @@ comfortable with it. The essential CMake options to pass in order for this to
 work reliably include:
 
 ```
--DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra;lld
+-DLLVM_ENABLE_PROJECTS=clang;clang-tools-extra;lld;lldb
 -DLLVM_ENABLE_RUNTIMES=compiler-rt;libcxx;libcxxabi;libunwind
 -DRUNTIMES_CMAKE_ARGS=-DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF;-DCMAKE_POSITION_INDEPENDENT_CODE=ON;-DLIBCXX_ENABLE_STATIC_ABI_LIBRARY=ON;-DLIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY=OFF;-DLIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY=ON;-DLIBCXX_USE_COMPILER_RT=ON;-DLIBCXXABI_USE_COMPILER_RT=ON;-DLIBCXXABI_USE_LLVM_UNWINDER=ON
+-DLLDB_ENABLE_PYTHON=ON
 ```
 
+## Debugger dumping with LLDB
+
+We include a `dump` command in `lldb` (see
+[Using-LLDB-from-the-command-line](#using-lldb-from-the-command-line) to ensure
+it is available). The `dump` command allows you to dump the contents of a value
+associated with an id. Since most data in the toolchain is referenced by id,
+this ends up being a very frequent task.
+
+The debugger command `dump <context> <id_expr>`, gets roughly translated into a
+C++ call to `Dump(<context>, <id_expr>)`.
+
+Run the `dump` command without any arguments to see the builtin help on how to
+use it.
+
 ## Troubleshooting build issues
+
+### `bazel clean`
+
+Changes to packages installed on your system may not be noticed by `bazel`. This
+includes things such as changing LLVM versions, or installing libc++. Running
+`bazel clean` should force cached state to be rebuilt.
 
 ### Old LLVM versions
 
 Many build issues result from the particular options `clang` and `llvm` have
 been built with, particularly when it comes to system-installed versions. If you
-run `clang --version`, you should see at least version 14. If you see an older
-version, please update.
+run `clang --version`, you should see at least version 19. If you see an older
+version, please update, or use the special `clang-19` instructions above.
 
 System installs of macOS typically won't work, for example being an old LLVM
 version or missing llvm-ar; [setup commands](#setup-commands) includes LLVM from
 Homebrew for this reason.
 
-It may be necessary to run `bazel clean` after updating versions in order to
-clean up cached state.
+Run [`bazel clean`](#bazel-clean) when changing the installed LLVM version.
 
 ### Asking for help
 
@@ -235,8 +336,9 @@ providing the output of the following diagnostic commands:
 ```shell
 echo $CC
 which clang
+which clang-19
 clang --version
-grep llvm_bindir $(bazel info workspace)/bazel-execroot/external/bazel_cc_toolchain/clang_detected_variables.bzl
+grep llvm_bindir $(bazel info workspace)/bazel-execroot/external/+clang_toolchain_extension+bazel_cc_toolchain/clang_detected_variables.bzl
 
 # If on macOS:
 brew --prefix llvm
@@ -251,17 +353,53 @@ Pass `-c dbg` to `bazel build` in order to compile with debugging enabled. For
 example:
 
 ```shell
-bazel build -c dbg //explorer
+bazel build -c dbg //toolchain
 ```
 
-Then debugging works with GDB:
+Then debugging works with LLDB:
 
 ```shell
-gdb bazel-bin/explorer/explorer
+lldb bazel-bin/toolchain/carbon
 ```
 
-Note that LLVM uses DWARF v5 debug symbols, which means that GDB version 10.1 or
-newer is required. If you see an error like this:
+Any installed version of LLDB at least as recent as the installed Clang used for
+building should work.
+
+### Using LLDB from the command line
+
+We include launch commands for running lldb in VSCode in
+[`.vscode/lldb_launch.json`](/.vscode/lldb_launch.json). But it's also possible
+to run lldb from the command line.
+
+When running the debugger, include the `--local-lldbinit` argument to use our
+preset configuration options. This requires running from the repository root.
+
+To debug a single `file_test`, use the following command, pointing it to an
+actual carbon test file.
+
+```
+bazel build -c dbg //toolchain/testing:file_test && \
+  lldb --local-lldbinit bazel-bin/toolchain/testing/file_test -- \
+    --dump_output --file_tests /path/to/some/test.carbon
+```
+
+### Debugging with GDB instead of LLDB
+
+If you prefer using GDB, you may want to pass some extra flags to the build:
+
+```shell
+bazel build -c dbg --features=-lldb_flags --features=gdb_flags //toolchain
+```
+
+Or you can add them to your `user.bazelrc`, they are designed to be safe to pass
+at all times and only have effect when building with debug information:
+
+```shell
+echo "build --features=-lldb_flags --features=gdb_flags" >> user.bazelrc
+```
+
+Note that on Linux we use Split DWARF and DWARF v5 debug symbols, which means
+that GDB version 10.1 or newer is required. If you see an error like this:
 
 ```shell
 Dwarf Error: DW_FORM_strx1 found in non-DWO CU
@@ -269,6 +407,12 @@ Dwarf Error: DW_FORM_strx1 found in non-DWO CU
 
 It means that the version of GDB used is too old, and does not support the DWARF
 v5 format.
+
+### Debugging other build modes
+
+If you have an issue that only reproduces with another build mode, you can still
+enable debug information in that mode by passing `--feature=debug_info_flags` to
+Bazel.
 
 ### Debugging on MacOS
 
@@ -279,7 +423,7 @@ for more information. To workaround, provide the `--spawn_strategy=local` option
 to Bazel for the debug build, like:
 
 ```shell
-bazel build --spawn_strategy=local -c dbg //explorer
+bazel build --spawn_strategy=local -c dbg //toolchain
 ```
 
 You should then be able to debug with `lldb`.

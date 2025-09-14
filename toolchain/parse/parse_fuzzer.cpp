@@ -6,15 +6,16 @@
 #include <cstring>
 
 #include "llvm/ADT/StringRef.h"
+#include "testing/fuzzing/libfuzzer.h"
+#include "toolchain/base/shared_value_stores.h"
 #include "toolchain/diagnostics/null_diagnostics.h"
-#include "toolchain/lex/tokenized_buffer.h"
-#include "toolchain/parse/tree.h"
+#include "toolchain/lex/lex.h"
+#include "toolchain/parse/parse.h"
 
 namespace Carbon::Testing {
 
 // NOLINTNEXTLINE: Match the documented fuzzer entry point declaration style.
-extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data,
-                                      std::size_t size) {
+extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
   // Ignore large inputs.
   // TODO: See tokenized_buffer_fuzzer.cpp.
   if (size > 100000) {
@@ -28,17 +29,22 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data,
       llvm::MemoryBuffer::getMemBuffer(data_ref, /*BufferName=*/TestFileName,
                                        /*RequiresNullTerminator=*/false)));
   auto source =
-      SourceBuffer::CreateFromFile(fs, TestFileName, NullDiagnosticConsumer());
+      SourceBuffer::MakeFromFile(fs, TestFileName, Diagnostics::NullConsumer());
 
   // Lex the input.
-  auto tokens = Lex::TokenizedBuffer::Lex(*source, NullDiagnosticConsumer());
+  SharedValueStores value_stores;
+  Lex::LexOptions lex_options;
+  lex_options.consumer = &Diagnostics::NullConsumer();
+  auto tokens = Lex::Lex(value_stores, *source, lex_options);
   if (tokens.has_errors()) {
     return 0;
   }
 
   // Now parse it into a tree. Note that parsing will (when asserts are enabled)
   // walk the entire tree to verify it so we don't have to do that here.
-  Parse::Tree::Parse(tokens, NullDiagnosticConsumer(), /*vlog_stream=*/nullptr);
+  Parse::ParseOptions parse_options;
+  parse_options.consumer = &Diagnostics::NullConsumer();
+  Parse::Parse(tokens, parse_options);
   return 0;
 }
 

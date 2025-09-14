@@ -6,6 +6,11 @@ Exceptions. See /LICENSE for license information.
 SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 -->
 
+<!--
+{% raw %}
+Hides `{{` from jekyll's liquid parsing. Note endraw at the bottom.
+-->
+
 ## Images
 
 Images are managed in
@@ -16,7 +21,7 @@ Images are managed in
 A sample of quicksort in Carbon.
 
 ```cpp
-package Sorting api;
+package Sorting;
 
 fn Partition[T:! Comparable & Movable](s: Slice(T))
      -> i64 {
@@ -47,26 +52,28 @@ fn QuickSort[T:! Comparable & Movable](s: Slice(T)) {
 
 ```cpp
 // C++:
-#include <math.h>
-#include <iostream>
+#include <numbers>
+#include <print>
 #include <span>
+#include <stdfloat>
 #include <vector>
+// or: import std;
 
 struct Circle {
-  float r;
+  std::float32_t r;
 };
 
 void PrintTotalArea(std::span<Circle> circles) {
-  float area = 0;
+  std::float32_t area = 0;
   for (const Circle& c : circles) {
-    area += M_PI * c.r * c.r;
+    area += std::numbers::pi * c.r * c.r;
   }
-  std::cout << "Total area: " << area << "\n";
+  std::print("Total area: {}\n", area);
 }
 
-auto main(int argc, char** argv) -> int {
-  std::vector<Circle> circles = {{1.0}, {2.0}};
-  // Implicitly constructors `span` from `vector`.
+auto main() -> int {
+  std::vector<Circle> circles = {{.r = 1.0}, {.r = 2.0}};
+  // Implicitly converts `vector` to `span`.
   PrintTotalArea(circles);
   return 0;
 }
@@ -76,14 +83,14 @@ auto main(int argc, char** argv) -> int {
 
 ```cpp
 // Carbon:
-package Geometry api;
+package Geometry;
 import Math;
 
 class Circle {
   var r: f32;
 }
 
-fn PrintTotalArea(circles: Slice(Circle)) {
+fn PrintTotalArea(circles: [Circle]) {
   var area: f32 = 0;
   for (c: Circle in circles) {
     area += Math.Pi * c.r * c.r;
@@ -93,8 +100,8 @@ fn PrintTotalArea(circles: Slice(Circle)) {
 
 fn Main() -> i32 {
   // A dynamically sized array, like `std::vector`.
-  var circles: Array(Circle) = ({.r = 1.0}, {.r = 2.0});
-  // Implicitly constructs `Slice` from `Array`.
+  var circles: array [Circle] = ({.r = 1.0}, {.r = 2.0});
+  // Implicitly constructs a slice from the array.
   PrintTotalArea(circles);
   return 0;
 }
@@ -104,16 +111,18 @@ fn Main() -> i32 {
 
 ```cpp
 // C++ code used in both Carbon and C++:
+#include <stdfloat>
+
 struct Circle {
-  float r;
+  std::float32_t r;
 };
 
 // Carbon exposing a function for C++:
-package Geometry api;
+package Geometry;
 import Cpp library "circle.h";
 import Math;
 
-fn PrintTotalArea(circles: Slice(Cpp.Circle)) {
+fn PrintTotalArea(circles: [Cpp.Circle]) {
   var area: f32 = 0;
   for (c: Cpp.Circle in circles) {
     area += Math.Pi * c.r * c.r;
@@ -126,11 +135,15 @@ fn PrintTotalArea(circles: Slice(Cpp.Circle)) {
 #include "circle.h"
 #include "geometry.carbon.h"
 
-auto main(int argc, char** argv) -> int {
+auto main() -> int {
   std::vector<Circle> circles = {{1.0}, {2.0}};
-  // Carbon's `Slice` supports implicit construction from `std::vector`,
-  // similar to `std::span`.
+  // A Carbon slice supports implicit construction
+  // from `std::vector`, similar to `std::span`.
   Geometry::PrintTotalArea(circles);
   return 0;
 }
 ```
+
+<!--
+{% endraw %}
+-->

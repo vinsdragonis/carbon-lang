@@ -15,7 +15,7 @@ class FileTestLineBase : public Printable<FileTestLineBase> {
  public:
   explicit FileTestLineBase(int file_number, int line_number)
       : file_number_(file_number), line_number_(line_number) {}
-  virtual ~FileTestLineBase() {}
+  virtual ~FileTestLineBase() = default;
 
   // Prints the autoupdated line.
   virtual auto Print(llvm::raw_ostream& out) const -> void = 0;
@@ -25,13 +25,20 @@ class FileTestLineBase : public Printable<FileTestLineBase> {
   auto file_number() const -> int { return file_number_; }
   auto line_number() const -> int { return line_number_; }
 
+  void set_location(int file_number, int line_number) {
+    file_number_ = file_number;
+    line_number_ = line_number;
+  }
+
  private:
   int file_number_;
   int line_number_;
 };
 
 // A line in the original file test.
-class FileTestLine : public FileTestLineBase {
+//
+// `final` because we use pointer arithmetic on this type.
+class FileTestLine final : public FileTestLineBase {
  public:
   explicit FileTestLine(int file_number, int line_number, llvm::StringRef line)
       : FileTestLineBase(file_number, line_number), line_(line) {}

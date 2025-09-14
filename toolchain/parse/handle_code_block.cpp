@@ -3,25 +3,26 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "toolchain/parse/context.h"
+#include "toolchain/parse/handle.h"
 
 namespace Carbon::Parse {
 
 auto HandleCodeBlock(Context& context) -> void {
   context.PopAndDiscardState();
 
-  context.PushState(State::CodeBlockFinish);
+  context.PushState(StateKind::CodeBlockFinish);
   if (context.ConsumeAndAddLeafNodeIf(Lex::TokenKind::OpenCurlyBrace,
                                       NodeKind::CodeBlockStart)) {
-    context.PushState(State::StatementScopeLoop);
+    context.PushState(StateKind::StatementScopeLoop);
   } else {
     context.AddLeafNode(NodeKind::CodeBlockStart, *context.position(),
                         /*has_error=*/true);
 
     // Recover by parsing a single statement.
-    CARBON_DIAGNOSTIC(ExpectedCodeBlock, Error, "Expected braced code block.");
+    CARBON_DIAGNOSTIC(ExpectedCodeBlock, Error, "expected braced code block");
     context.emitter().Emit(*context.position(), ExpectedCodeBlock);
 
-    context.PushState(State::Statement);
+    context.PushState(StateKind::Statement);
   }
 }
 
@@ -30,11 +31,9 @@ auto HandleCodeBlockFinish(Context& context) -> void {
 
   // If the block started with an open curly, this is a close curly.
   if (context.tokens().GetKind(state.token) == Lex::TokenKind::OpenCurlyBrace) {
-    context.AddNode(NodeKind::CodeBlock, context.Consume(), state.subtree_start,
-                    state.has_error);
+    context.AddNode(NodeKind::CodeBlock, context.Consume(), state.has_error);
   } else {
-    context.AddNode(NodeKind::CodeBlock, state.token, state.subtree_start,
-                    /*has_error=*/true);
+    context.AddNode(NodeKind::CodeBlock, state.token, /*has_error=*/true);
   }
 }
 

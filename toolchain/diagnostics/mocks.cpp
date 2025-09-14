@@ -4,29 +4,36 @@
 
 #include "toolchain/diagnostics/mocks.h"
 
-namespace Carbon {
+#include <ostream>
 
-void PrintTo(const Diagnostic& diagnostic, std::ostream* os) {
-  *os << "Diagnostic{" << diagnostic.message.kind << ", ";
+namespace Carbon::Diagnostics {
+
+auto PrintTo(const Diagnostic& diagnostic, std::ostream* os) -> void {
+  *os << "Diagnostic{";
   PrintTo(diagnostic.level, os);
-  *os << ", " << diagnostic.message.location.file_name << ":"
-      << diagnostic.message.location.line_number << ":"
-      << diagnostic.message.location.column_number << ", \""
-      << diagnostic.message.format_fn(diagnostic.message) << "\"}";
+  for (const auto& message : diagnostic.messages) {
+    *os << ", {" << message.loc.filename << ":" << message.loc.line_number
+        << ":" << message.loc.column_number << ", \"" << message.Format()
+        << "}";
+  }
+  *os << "\"}";
 }
 
-void PrintTo(DiagnosticLevel level, std::ostream* os) {
+auto PrintTo(Level level, std::ostream* os) -> void {
   switch (level) {
-    case DiagnosticLevel::Note:
+    case Level::LocationInfo:
+      *os << "LocationInfo";
+      break;
+    case Level::Note:
       *os << "Note";
       break;
-    case DiagnosticLevel::Warning:
+    case Level::Warning:
       *os << "Warning";
       break;
-    case DiagnosticLevel::Error:
+    case Level::Error:
       *os << "Error";
       break;
   }
 }
 
-}  // namespace Carbon
+}  // namespace Carbon::Diagnostics

@@ -17,6 +17,8 @@ load(
     "variable_with_value",
     "with_feature_set",
 )
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
+load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load(
     ":clang_detected_variables.bzl",
     "clang_bindir",
@@ -99,11 +101,21 @@ def _impl(ctx):
         for name in [ACTION_NAMES.strip]
     ]
 
-    std_compile_flags = ["-std=c++17"]
+    std_compile_flags = ["-std=c++20"]
 
     # libc++ is only used on non-Windows platforms.
-    if ctx.attr.target_cpu != "x64_windows":
+    if ctx.attr.target_os != "windows":
         std_compile_flags.append("-stdlib=libc++")
+
+    # TODO: Regression that warns on anonymous unions; remove depending on fix.
+    # Sets the flag for unknown clang versions, which are assumed to be at head.
+    # https://github.com/llvm/llvm-project/issues/70384
+    if not clang_version or clang_version == 18:
+        missing_field_init_flags = ["-Wno-missing-field-initializers"]
+    elif clang_version > 18:
+        missing_field_init_flags = ["-Wno-missing-designated-field-initializers"]
+    else:
+        missing_field_init_flags = []
 
     default_flags_feature = feature(
         name = "default_flags",
@@ -132,13 +144,28 @@ def _impl(ctx):
                             "-Wself-assign",
                             "-Wimplicit-fallthrough",
                             "-Wctad-maybe-unsupported",
+                            "-Wextra-semi",
+                            "-Wmissing-prototypes",
+                            "-Wzero-as-null-pointer-constant",
                             "-Wdelete-non-virtual-dtor",
                             # Don't warn on external code as we can't
-                            # necessarily patch it easily.
-                            "--system-header-prefix=external/",
+                            # necessarily patch it easily. Note that these have
+                            # to be initial directories in the `#include` line.
+                            "--system-header-prefix=absl/",
+                            "--system-header-prefix=benchmark/",
+                            "--system-header-prefix=boost/",
+                            "--system-header-prefix=clang-tools-extra/",
+                            "--system-header-prefix=clang/",
+                            "--system-header-prefix=gmock/",
+                            "--system-header-prefix=gtest/",
+                            "--system-header-prefix=libfuzzer/",
+                            "--system-header-prefix=llvm/",
+                            "--system-header-prefix=re2/",
+                            "--system-header-prefix=tools/cpp/",
+                            "--system-header-prefix=tree_sitter/",
                             # Compile actions shouldn't link anything.
                             "-c",
-                        ],
+                        ] + missing_field_init_flags,
                     ),
                     flag_group(
                         expand_if_available = "output_assembly_file",
@@ -233,10 +260,6 @@ def _impl(ctx):
                 actions = all_link_actions,
                 flag_groups = [
                     flag_group(
-                        flags = ["-Wl,--gdb-index"],
-                        expand_if_available = "is_using_fission",
-                    ),
-                    flag_group(
                         flags = ["-Wl,-S"],
                         expand_if_available = "strip_debug_symbols",
                     ),
@@ -323,6 +346,7 @@ def _impl(ctx):
     # minimal settings if both are enabled.
     minimal_debug_info_flags = feature(
         name = "minimal_debug_info_flags",
+        implies = ["debug_info_compression_flags"],
         flag_sets = [
             flag_set(
                 actions = codegen_compile_actions,
@@ -334,9 +358,9 @@ def _impl(ctx):
             ),
         ],
     )
-    default_debug_info_flags = feature(
-        name = "default_debug_info_flags",
-        enabled = True,
+    debug_info_flags = feature(
+        name = "debug_info_flags",
+        implies = ["debug_info_compression_flags"],
         flag_sets = [
             flag_set(
                 actions = codegen_compile_actions,
@@ -344,18 +368,89 @@ def _impl(ctx):
                     flag_group(
                         flags = ["-g"],
                     ),
+                    flag_group(
+                        flags = ["-gsplit-dwarf"],
+                        expand_if_available = "per_object_debug_info_file",
+                    ),
                 ]),
-                with_features = [with_feature_set(features = ["dbg"])],
             ),
+        ],
+    )
+    debug_info_compression_flags = feature(
+        name = "debug_info_compression_flags",
+        flag_sets = [
+            flag_set(
+                actions = codegen_compile_actions + all_link_actions,
+                flag_groups = ([
+                    flag_group(
+                        flags = ["-gz"],
+                    ),
+                ]),
+            ),
+        ],
+    )
+
+    # Define a set of mutually exclusive debugger flags.
+    debugger_flags = feature(name = "debugger_flags")
+    lldb_flags = feature(
+        # Use a convenient name for users to select if needed.
+        name = "lldb_flags",
+        # Default enable LLDB-optimized flags whenever debugging.
+        enabled = True,
+        requires = [feature_set(features = ["debug_info_flags"])],
+        provides = ["debugger_flags"],
+        flag_sets = [
             flag_set(
                 actions = codegen_compile_actions,
+                flag_groups = ([
+                    flag_group(
+                        flags = [
+                            "-glldb",
+                            "-gpubnames",
+                            "-gsimple-template-names",
+                        ],
+                    ),
+                ]),
+            ),
+        ],
+    )
+    gdb_flags = feature(
+        # Use a convenient name for users to select if needed.
+        name = "gdb_flags",
+        requires = [feature_set(features = ["debug_info_flags"])],
+        provides = ["debugger_flags"],
+        flag_sets = [
+            flag_set(
+                actions = codegen_compile_actions,
+                flag_groups = ([
+                    flag_group(
+                        flags = ["-ggdb"],
+                    ),
+                    flag_group(
+                        flags = ["-ggnu-pubnames"],
+                    ),
+                ]),
+            ),
+            flag_set(
+                actions = all_link_actions,
                 flag_groups = [
                     flag_group(
-                        flags = ["-gsplit-dwarf", "-g"],
-                        expand_if_available = "per_object_debug_info_file",
+                        flags = ["-Wl,--gdb-index"],
                     ),
                 ],
             ),
+        ],
+    )
+
+    # An enabled feature that requires the `dbg` compilation mode. This is used
+    # to toggle on more general features to use by default, while allowing those
+    # general features to be explicitly enabled where needed.
+    enable_in_dbg = feature(
+        name = "enable_in_dbg",
+        enabled = True,
+        requires = [feature_set(["dbg"])],
+        implies = [
+            "debug_info_flags",
         ],
     )
 
@@ -457,8 +552,16 @@ def _impl(ctx):
 
     sanitizer_common_flags = feature(
         name = "sanitizer_common_flags",
-        requires = [feature_set(["nonhost"])],
-        implies = ["minimal_optimization_flags", "minimal_debug_info_flags", "preserve_call_stacks"],
+        implies = ["minimal_debug_info_flags", "preserve_call_stacks"],
+    )
+
+    # Separated from the feature above so it can only be included on platforms
+    # where it is supported. There is no negative flag in Clang so we can't just
+    # override it later.
+    sanitizer_static_lib_flags = feature(
+        name = "sanitizer_static_lib_flags",
+        enabled = True,
+        requires = [feature_set(["sanitizer_common_flags"])],
         flag_sets = [flag_set(
             actions = all_link_actions,
             flag_groups = [flag_group(flags = [
@@ -469,16 +572,19 @@ def _impl(ctx):
 
     asan = feature(
         name = "asan",
-        requires = [feature_set(["nonhost"])],
         implies = ["sanitizer_common_flags"],
         flag_sets = [flag_set(
             actions = all_compile_actions + all_link_actions,
             flag_groups = [flag_group(flags = [
                 "-fsanitize=address,undefined,nullability",
                 "-fsanitize-address-use-after-scope",
+                # Outlining is almost always the right tradeoff for our
+                # sanitizer usage where we're more pressured on generated code
+                # size than runtime performance.
+                "-fsanitize-address-outline-instrumentation",
                 # We don't need the recovery behavior of UBSan as we expect
                 # builds to be clean. Not recovering is a bit cheaper.
-                "-fno-sanitize-recover=undefined",
+                "-fno-sanitize-recover=undefined,nullability",
                 # Don't embed the full path name for files. This limits the size
                 # and combined with line numbers is unlikely to result in many
                 # ambiguities.
@@ -490,17 +596,55 @@ def _impl(ctx):
         )],
     )
 
-    enable_asan_in_fastbuild = feature(
-        name = "enable_asan_in_fastbuild",
+    # A feature that further reduces the generated code size of our the ASan
+    # feature, but at the cost of lower quality diagnostics. This is enabled
+    # along with ASan in our fastbuild configuration, but can be disabled
+    # explicitly to get better error messages.
+    asan_min_size = feature(
+        name = "asan_min_size",
+        requires = [feature_set(["asan"])],
+        flag_sets = [flag_set(
+            actions = all_compile_actions + all_link_actions,
+            flag_groups = [flag_group(flags = [
+                # Force two UBSan checks that have especially large code size
+                # cost to use the minimal branch to a trapping instruction model
+                # instead of the full diagnostic.
+                "-fsanitize-trap=alignment,null",
+            ])],
+        )],
+    )
+
+    # Likely due to being unable to use the static-linked and up-to-date
+    # sanitizer runtimes, we have to disable a number of sanitizers on macOS.
+    macos_asan_workarounds = feature(
+        name = "macos_sanitizer_workarounds",
         enabled = True,
-        requires = [feature_set(["nonhost", "fastbuild"])],
-        implies = ["asan"],
+        requires = [feature_set(["asan"])],
+        flag_sets = [flag_set(
+            actions = all_compile_actions + all_link_actions,
+            flag_groups = [flag_group(flags = [
+                "-fno-sanitize=function",
+            ])],
+        )],
+    )
+
+    # An enabled feature that requires the `fastbuild` compilation. This is used
+    # to toggle general features on by default, while allowing them to be
+    # directly enabled and disabled more generally as desired.
+    enable_in_fastbuild = feature(
+        name = "enable_in_fastbuild",
+        enabled = True,
+        requires = [feature_set(["fastbuild"])],
+        implies = [
+            "asan",
+            "asan_min_size",
+            "minimal_optimization_flags",
+            "minimal_debug_info_flags",
+        ],
     )
 
     fuzzer = feature(
         name = "fuzzer",
-        requires = [feature_set(["nonhost"])],
-        implies = ["asan"],
         flag_sets = [flag_set(
             actions = all_compile_actions + all_link_actions,
             flag_groups = [flag_group(flags = [
@@ -509,15 +653,14 @@ def _impl(ctx):
         )],
     )
 
-    # With clang 14 and lower, we expect it to be built with libc++ debug
-    # support. In later LLVM versions, we expect the assertions define to work.
-    # clang 17 deprecates LIBCPP_ENABLE_ASSERTIONS in favor of HARDENED_MODE.
-    if clang_version and clang_version <= 14:
-        libcpp_debug_flags = ["-D_LIBCPP_DEBUG=1"]
-    elif clang_version and clang_version <= 16:
-        libcpp_debug_flags = ["-D_LIBCPP_ENABLE_ASSERTIONS=1"]
-    else:
-        libcpp_debug_flags = ["-D_LIBCPP_ENABLE_HARDENED_MODE=1"]
+    # Clang HARDENING_MODE has 4 possible values:
+    # https://libcxx.llvm.org/Hardening.html#notes-for-users
+    libcpp_debug_flags = [
+        "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG",
+    ]
+    libcpp_release_flags = [
+        "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST",
+    ]
 
     linux_flags_feature = feature(
         name = "linux_flags",
@@ -534,14 +677,8 @@ def _impl(ctx):
                             # Force the C++ standard library and runtime
                             # libraries to be statically linked. This works even
                             # with libc++ and libunwind despite the names,
-                            # provided libc++ is built with two CMake options:
+                            # provided libc++ is built with the CMake option:
                             # - `-DCMAKE_POSITION_INDEPENDENT_CODE=ON`
-                            # - `-DLIBCXX_STATICALLY_LINK_ABI_IN_STATIC_LIBRARY`
-                            # These are both required because of PR43604
-                            # (impacting at least Debian packages of libc++) and
-                            # PR46321 (impacting most other packages).
-                            # We recommend using Homebrew's LLVM install on
-                            # Linux.
                             "-static-libstdc++",
                             "-static-libgcc",
                             # Link with Clang's runtime library. This is always
@@ -554,6 +691,11 @@ def _impl(ctx):
                             "-L" + llvm_bindir + "/../lib",
                             # Link with pthread.
                             "-lpthread",
+                            # Force linking the static libc++abi archive here.
+                            # This *should* be linked automatically, but not
+                            # every release of LLVM correctly sets the CMake
+                            # flags to do so.
+                            "-l:libc++abi.a",
                         ],
                     ),
                 ]),
@@ -563,6 +705,13 @@ def _impl(ctx):
                 flag_groups = [flag_group(flags = libcpp_debug_flags)],
                 with_features = [
                     with_feature_set(not_features = ["opt"]),
+                ],
+            ),
+            flag_set(
+                actions = all_compile_actions,
+                flag_groups = [flag_group(flags = libcpp_release_flags)],
+                with_features = [
+                    with_feature_set(features = ["opt"]),
                 ],
             ),
             flag_set(
@@ -654,8 +803,7 @@ def _impl(ctx):
                             ),
                             flag_group(
                                 flags = ["-Wl,-whole-archive"],
-                                expand_if_true =
-                                    "libraries_to_link.is_whole_archive",
+                                expand_if_true = "libraries_to_link.is_whole_archive",
                             ),
                             flag_group(
                                 flags = ["%{libraries_to_link.object_files}"],
@@ -703,6 +851,137 @@ def _impl(ctx):
                             flag_group(
                                 flags = ["-Wl,-no-whole-archive"],
                                 expand_if_true = "libraries_to_link.is_whole_archive",
+                            ),
+                            flag_group(
+                                flags = ["-Wl,--end-lib"],
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "object_file_group",
+                                ),
+                            ),
+                        ],
+                        expand_if_available = "libraries_to_link",
+                    ),
+                    # Note that the params file comes at the end, after the
+                    # libraries to link above.
+                    flag_group(
+                        expand_if_available = "linker_param_file",
+                        flags = ["@%{linker_param_file}"],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    macos_link_libraries_feature = feature(
+        name = "macos_link_libraries",
+        enabled = True,
+        flag_sets = [
+            flag_set(
+                actions = all_link_actions,
+                flag_groups = [
+                    flag_group(
+                        flags = ["%{linkstamp_paths}"],
+                        iterate_over = "linkstamp_paths",
+                        expand_if_available = "linkstamp_paths",
+                    ),
+                    flag_group(
+                        iterate_over = "libraries_to_link",
+                        flag_groups = [
+                            flag_group(
+                                flags = ["-Wl,--start-lib"],
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "object_file_group",
+                                ),
+                            ),
+                            flag_group(
+                                iterate_over = "libraries_to_link.object_files",
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "object_file_group",
+                                ),
+                                flag_groups = [
+                                    flag_group(
+                                        flags = ["%{libraries_to_link.object_files}"],
+                                        expand_if_false = "libraries_to_link.is_whole_archive",
+                                    ),
+                                    flag_group(
+                                        flags = ["-Wl,-force_load,%{libraries_to_link.object_files}"],
+                                        expand_if_true = "libraries_to_link.is_whole_archive",
+                                    ),
+                                ],
+                            ),
+                            flag_group(
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "object_file",
+                                ),
+                                flag_groups = [
+                                    flag_group(
+                                        flags = ["%{libraries_to_link.name}"],
+                                        expand_if_false = "libraries_to_link.is_whole_archive",
+                                    ),
+                                    flag_group(
+                                        flags = ["-Wl,-force_load,%{libraries_to_link.name}"],
+                                        expand_if_true = "libraries_to_link.is_whole_archive",
+                                    ),
+                                ],
+                            ),
+                            flag_group(
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "interface_library",
+                                ),
+                                flag_groups = [
+                                    flag_group(
+                                        flags = ["%{libraries_to_link.name}"],
+                                        expand_if_false = "libraries_to_link.is_whole_archive",
+                                    ),
+                                    flag_group(
+                                        flags = ["-Wl,-force_load,%{libraries_to_link.name}"],
+                                        expand_if_true = "libraries_to_link.is_whole_archive",
+                                    ),
+                                ],
+                            ),
+                            flag_group(
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "static_library",
+                                ),
+                                flag_groups = [
+                                    flag_group(
+                                        flags = ["%{libraries_to_link.name}"],
+                                        expand_if_false = "libraries_to_link.is_whole_archive",
+                                    ),
+                                    flag_group(
+                                        flags = ["-Wl,-force_load,%{libraries_to_link.name}"],
+                                        expand_if_true = "libraries_to_link.is_whole_archive",
+                                    ),
+                                ],
+                            ),
+                            flag_group(
+                                flags = ["-l%{libraries_to_link.name}"],
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "dynamic_library",
+                                ),
+                            ),
+                            flag_group(
+                                flags = ["-l:%{libraries_to_link.name}"],
+                                expand_if_equal = variable_with_value(
+                                    name = "libraries_to_link.type",
+                                    value = "versioned_dynamic_library",
+                                ),
+                            ),
+                            flag_group(
+                                expand_if_true = "libraries_to_link.is_whole_archive",
+                                flag_groups = [
+                                    flag_group(
+                                        expand_if_false = "macos_flags",
+                                        flags = ["-Wl,-no-whole-archive"],
+                                    ),
+                                ],
                             ),
                             flag_group(
                                 flags = ["-Wl,--end-lib"],
@@ -815,10 +1094,7 @@ def _impl(ctx):
     )
 
     # Now that we have built up the constituent feature definitions, compose
-    # them, including configuration based on the target platform. Currently,
-    # the target platform is configured with the "cpu" attribute for legacy
-    # reasons. Further, for legacy reasons the default is a Linux OS target and
-    # the x88-64 CPU name is "k8".
+    # them, including configuration based on the target platform.
 
     # First, define features that are simply used to configure others.
     features = [
@@ -826,11 +1102,20 @@ def _impl(ctx):
         feature(name = "fastbuild"),
         feature(name = "host"),
         feature(name = "no_legacy_features"),
-        feature(name = "nonhost"),
         feature(name = "opt"),
-        feature(name = "supports_dynamic_linker", enabled = ctx.attr.target_cpu == "k8"),
+        feature(name = "supports_dynamic_linker", enabled = ctx.attr.target_os == "linux"),
         feature(name = "supports_pic", enabled = True),
-        feature(name = "supports_start_end_lib", enabled = ctx.attr.target_cpu == "k8"),
+        feature(name = "supports_start_end_lib", enabled = ctx.attr.target_os == "linux"),
+
+        # Enable split debug info whenever debug info is requested.
+        feature(
+            name = "per_object_debug_info",
+            enabled = True,
+            # This has to be directly conditioned on requesting debug info at
+            # all, otherwise Bazel will look for an extra output file and not
+            # find one.
+            requires = [feature_set(features = ["debug_info_flags"])],
+        ),
     ]
 
     # The order of the features determines the relative order of flags used.
@@ -840,12 +1125,18 @@ def _impl(ctx):
         minimal_optimization_flags,
         default_optimization_flags,
         minimal_debug_info_flags,
-        default_debug_info_flags,
+        debug_info_flags,
+        debug_info_compression_flags,
+        debugger_flags,
+        lldb_flags,
+        gdb_flags,
+        enable_in_dbg,
         preserve_call_stacks,
         sysroot_feature,
         sanitizer_common_flags,
         asan,
-        enable_asan_in_fastbuild,
+        asan_min_size,
+        enable_in_fastbuild,
         fuzzer,
         layering_check,
         module_maps,
@@ -855,35 +1146,39 @@ def _impl(ctx):
 
     # Next, add the features based on the target platform. Here too the
     # features are order sensitive. We also setup the sysroot here.
-    if ctx.attr.target_cpu == "k8":
+    if ctx.attr.target_os == "linux":
+        features.append(sanitizer_static_lib_flags)
         features.append(linux_flags_feature)
         sysroot = None
-    elif ctx.attr.target_cpu == "x64_windows":
+    elif ctx.attr.target_os == "windows":
         # TODO: Need to figure out if we need to add windows specific features
         # I think the .pdb debug files will need to be handled differently,
         # so that might be an example where a feature must be added.
         sysroot = None
-    elif ctx.attr.target_cpu in ["darwin", "darwin_arm64"]:
+    elif ctx.attr.target_os == "macos":
+        features.append(macos_asan_workarounds)
         features.append(macos_flags_feature)
         sysroot = sysroot_dir
-    elif ctx.attr.target_cpu == "freebsd":
+    elif ctx.attr.target_os == "freebsd":
+        features.append(sanitizer_static_lib_flags)
         features.append(freebsd_flags_feature)
         sysroot = sysroot_dir
     else:
-        fail("Unsupported target platform!")
+        fail("Unsupported target OS!")
 
-    # TODO: Need to support non-macOS ARM platforms here.
-    if ctx.attr.target_cpu == "darwin_arm64":
+    if ctx.attr.target_cpu in ["aarch64", "arm64"]:
         features.append(aarch64_cpu_flags)
     else:
         features.append(x86_64_cpu_flags)
 
     # Finally append the libraries to link and any final flags.
-    features += [
-        default_link_libraries_feature,
-        final_flags_feature,
-    ]
+    if ctx.attr.target_os == "macos":
+        features.append(macos_link_libraries_feature)
+    else:
+        features.append(default_link_libraries_feature)
+    features.append(final_flags_feature)
 
+    identifier = "local-{0}-{1}".format(ctx.attr.target_cpu, ctx.attr.target_os)
     return cc_common.create_cc_toolchain_config_info(
         ctx = ctx,
         features = features,
@@ -897,15 +1192,18 @@ def _impl(ctx):
 
         # This configuration only supports local non-cross builds so derive
         # everything from the target CPU selected.
-        toolchain_identifier = "local-" + ctx.attr.target_cpu,
-        host_system_name = "local-" + ctx.attr.target_cpu,
-        target_system_name = "local-" + ctx.attr.target_cpu,
+        toolchain_identifier = identifier,
+        host_system_name = identifier,
+        target_system_name = identifier,
         target_cpu = ctx.attr.target_cpu,
+
+        # This is used to expose a "flag" that `config_setting` rules can use to
+        # determine if the compiler is Clang.
+        compiler = "clang",
 
         # These attributes aren't meaningful at all so just use placeholder
         # values.
         target_libc = "local",
-        compiler = "local",
         abi_version = "local",
         abi_libc_version = "local",
 
@@ -917,6 +1215,52 @@ cc_toolchain_config = rule(
     implementation = _impl,
     attrs = {
         "target_cpu": attr.string(mandatory = True),
+        "target_os": attr.string(mandatory = True),
     },
     provides = [CcToolchainConfigInfo],
 )
+
+def cc_local_toolchain_suite(name, configs):
+    """Create a toolchain suite that uses the local Clang/LLVM install.
+
+    Args:
+        name: The name of the toolchain suite to produce.
+        configs: An array of (os, cpu) pairs to support in the toolchain.
+    """
+
+    # An empty filegroup to use when stubbing out the toolchains.
+    native.filegroup(
+        name = name + "_empty",
+        srcs = [],
+    )
+
+    # Create the individual local toolchains for each CPU.
+    for (os, cpu) in configs:
+        config_name = "{0}_{1}_{2}".format(name, os, cpu)
+        cc_toolchain_config(
+            name = config_name + "_config",
+            target_os = os,
+            target_cpu = cpu,
+        )
+        cc_toolchain(
+            name = config_name + "_tools",
+            all_files = ":" + name + "_empty",
+            ar_files = ":" + name + "_empty",
+            as_files = ":" + name + "_empty",
+            compiler_files = ":" + name + "_empty",
+            dwp_files = ":" + name + "_empty",
+            linker_files = ":" + name + "_empty",
+            objcopy_files = ":" + name + "_empty",
+            strip_files = ":" + name + "_empty",
+            supports_param_files = 1,
+            toolchain_config = ":" + config_name + "_config",
+            toolchain_identifier = config_name,
+        )
+        compatible_with = ["@platforms//cpu:" + cpu, "@platforms//os:" + os]
+        native.toolchain(
+            name = config_name,
+            exec_compatible_with = compatible_with,
+            target_compatible_with = compatible_with,
+            toolchain = config_name + "_tools",
+            toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+        )

@@ -6,20 +6,21 @@
 
 #include "common/check.h"
 #include "llvm/ADT/StringRef.h"
+#include "testing/fuzzing/libfuzzer.h"
+#include "toolchain/base/shared_value_stores.h"
 #include "toolchain/diagnostics/null_diagnostics.h"
-#include "toolchain/lex/tokenized_buffer.h"
+#include "toolchain/lex/lex.h"
 
 namespace Carbon::Testing {
 
 // NOLINTNEXTLINE: Match the documented fuzzer entry point declaration style.
-extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data,
-                                      std::size_t size) {
+extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
   // Ignore large inputs.
   // TODO: Investigate replacement with an error limit. Content with errors on
   // escaped quotes (`\"` repeated) have O(M * N) behavior for M errors in a
   // file length N, so either that will need to also be fixed or M will need to
   // shrink for large (1MB+) inputs.
-  // This also affects parse_tree_fuzzer.cpp.
+  // This also affects parse/parse_fuzzer.cpp.
   if (size > 100000) {
     return 0;
   }
@@ -31,9 +32,12 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data,
       llvm::MemoryBuffer::getMemBuffer(data_ref, /*BufferName=*/TestFileName,
                                        /*RequiresNullTerminator=*/false)));
   auto source =
-      SourceBuffer::CreateFromFile(fs, TestFileName, NullDiagnosticConsumer());
+      SourceBuffer::MakeFromFile(fs, TestFileName, Diagnostics::NullConsumer());
 
-  auto buffer = Lex::TokenizedBuffer::Lex(*source, NullDiagnosticConsumer());
+  SharedValueStores value_stores;
+  Lex::LexOptions options;
+  options.consumer = &Diagnostics::NullConsumer();
+  auto buffer = Lex::Lex(value_stores, *source, options);
   if (buffer.has_errors()) {
     return 0;
   }
@@ -42,13 +46,13 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data,
   //
   // TODO: We should enhance this to do more sanity checks on the resulting
   // token stream.
-  for (Lex::Token token : buffer.tokens()) {
+  for (Lex::TokenIndex token : buffer.tokens()) {
     int line_number = buffer.GetLineNumber(token);
-    CARBON_CHECK(line_number > 0) << "Invalid line number!";
-    CARBON_CHECK(line_number < INT_MAX) << "Invalid line number!";
+    CARBON_CHECK(line_number > 0, "Invalid line number!");
+    CARBON_CHECK(line_number < INT_MAX, "Invalid line number!");
     int column_number = buffer.GetColumnNumber(token);
-    CARBON_CHECK(column_number > 0) << "Invalid line number!";
-    CARBON_CHECK(column_number < INT_MAX) << "Invalid line number!";
+    CARBON_CHECK(column_number > 0, "Invalid line number!");
+    CARBON_CHECK(column_number < INT_MAX, "Invalid line number!");
   }
 
   return 0;

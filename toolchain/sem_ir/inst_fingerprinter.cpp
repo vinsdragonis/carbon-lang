@@ -1,0 +1,495 @@
+// Part of the Carbon Language project, under the Apache License v2.0 with LLVM
+// Exceptions. See /LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+#include "toolchain/sem_ir/inst_fingerprinter.h"
+
+#include <array>
+#include <utility>
+#include <variant>
+
+#include "common/concepts.h"
+#include "common/ostream.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StableHashing.h"
+#include "toolchain/base/fixed_size_value_store.h"
+#include "toolchain/base/value_ids.h"
+#include "toolchain/sem_ir/entity_with_params_base.h"
+#include "toolchain/sem_ir/ids.h"
+#include "toolchain/sem_ir/typed_insts.h"
+
+namespace Carbon::SemIR {
+
+namespace {
+struct Worklist {
+  using FingerprintStore = FixedSizeValueStore<InstId, uint64_t>;
+  using FilesFingerprintStores =
+      FixedSizeValueStore<CheckIRId, FingerprintStore>;
+
+  // The file containing the instruction we're currently processing.
+  const File* sem_ir = nullptr;
+  // The instructions we need to compute fingerprints for.
+  llvm::SmallVector<
+      std::pair<const File*, std::variant<InstId, InstBlockId, ImplId>>>
+      todo;
+  // The contents of the current instruction as accumulated so far. This is used
+  // to build a Merkle tree containing a fingerprint for the current
+  // instruction.
+  llvm::SmallVector<llvm::stable_hash> contents = {};
+  // Known cached instruction fingerprints. Each item in `todo` will be added to
+  // the cache if not already present.
+  FilesFingerprintStores* fingerprints;
+
+  // Finish fingerprinting and compute the fingerprint.
+  auto Finish() -> uint64_t { return llvm::stable_hash_combine(contents); }
+
+  // Gets the known fingerprint from the cache, or returns 0.
+  auto GetFingerprint(const File* file, InstId inst_id) -> uint64_t {
+    auto& store = fingerprints->Get(file->check_ir_id());
+    if (store.size() == 0) {
+      return 0;
+    }
+    return store.Get(inst_id);
+  }
+
+  // Sets the fingerprint for an instruction in the cache. Since 0 is used to
+  // indicate empty, we map 0 to another fixed value.
+  auto SetFingerprint(const File* file, InstId inst_id, uint64_t fingerprint) {
+    auto& store = fingerprints->Get(file->check_ir_id());
+    if (store.size() == 0) {
+      store = FixedSizeValueStore<InstId, uint64_t>::MakeWithExplicitSize(
+          file->insts().size(), 0);
+    }
+    store.Set(inst_id, fingerprint ? fingerprint : 1);
+  }
+
+  // Add an invalid marker to the contents. This is used when the entity
+  // contains a `None` ID. This uses an arbitrary fixed value that is assumed
+  // to be unlikely to collide with a valid value.
+  auto AddInvalid() -> void { contents.push_back(-1); }
+
+  // Add a string to the contents.
+  auto AddString(llvm::StringRef string) -> void {
+    contents.push_back(llvm::stable_hash_name(string));
+  }
+
+  // Each of the following `Add` functions adds a typed argument to the contents
+  // of the current instruction. If we don't yet have a fingerprint for the
+  // argument, it instead adds that argument to the worklist instead.
+
+  auto Add(InstKind kind) -> void {
+    // TODO: Precompute or cache the hash of instruction IR names, or pick a
+    // scheme that doesn't change when IR names change.
+    AddString(kind.ir_name());
+  }
+
+  auto Add(IdentifierId ident_id) -> void {
+    AddString(sem_ir->identifiers().Get(ident_id));
+  }
+
+  auto Add(StringLiteralValueId lit_id) -> void {
+    AddString(sem_ir->string_literal_values().Get(lit_id));
+  }
+
+  auto Add(NameId name_id) -> void {
+    AddString(sem_ir->names().GetIRBaseName(name_id));
+  }
+
+  auto Add(EntityNameId entity_name_id) -> void {
+    if (!entity_name_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    const auto& entity_name = sem_ir->entity_names().Get(entity_name_id);
+    if (entity_name.bind_index().has_value()) {
+      Add(entity_name.bind_index());
+      // Don't include the name. While it is part of the canonical identity of a
+      // compile-time binding, renaming it (and its uses) is a compatible change
+      // that we would like to not affect the fingerprint.
+      //
+      // Also don't include the `is_template` flag. Changing that flag should
+      // also be a compatible change from the perspective of users of a generic.
+    } else {
+      Add(entity_name.name_id);
+    }
+    // TODO: Should we include the parent index?
+  }
+
+  auto AddInFile(const File* file, InstId inner_id) -> void {
+    if (!inner_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    if (auto fingerprint = GetFingerprint(file, inner_id)) {
+      contents.push_back(fingerprint);
+      return;
+    }
+    todo.push_back({file, inner_id});
+  }
+
+  auto Add(InstId inner_id) -> void { AddInFile(sem_ir, inner_id); }
+
+  auto Add(ConstantId constant_id) -> void {
+    if (!constant_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    Add(sem_ir->constant_values().GetInstId(constant_id));
+  }
+
+  auto Add(TypeId type_id) -> void {
+    if (!type_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    Add(sem_ir->types().GetInstId(type_id));
+  }
+
+  template <typename T>
+  auto AddBlock(llvm::ArrayRef<T> block) -> void {
+    contents.push_back(block.size());
+    for (auto inner_id : block) {
+      Add(inner_id);
+    }
+  }
+
+  auto Add(InstBlockId inst_block_id) -> void {
+    if (!inst_block_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    AddBlock(sem_ir->inst_blocks().Get(inst_block_id));
+  }
+
+  auto Add(StructTypeField field) -> void {
+    Add(field.name_id);
+    Add(field.type_inst_id);
+  }
+
+  auto Add(StructTypeFieldsId struct_type_fields_id) -> void {
+    if (!struct_type_fields_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    AddBlock(sem_ir->struct_type_fields().Get(struct_type_fields_id));
+  }
+
+  auto Add(CustomLayoutId custom_layout_id) -> void {
+    if (!custom_layout_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    auto block = sem_ir->custom_layouts().Get(custom_layout_id);
+    contents.push_back(block.size());
+    contents.insert(contents.end(), block.begin(), block.end());
+  }
+
+  auto Add(NameScopeId name_scope_id) -> void {
+    if (!name_scope_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    const auto& scope = sem_ir->name_scopes().Get(name_scope_id);
+    Add(scope.name_id());
+    if (!sem_ir->name_scopes().IsPackage(name_scope_id) &&
+        scope.parent_scope_id().has_value()) {
+      Add(sem_ir->name_scopes().Get(scope.parent_scope_id()).inst_id());
+    }
+  }
+
+  template <typename EntityT = EntityWithParamsBase>
+  auto AddEntity(const std::type_identity_t<EntityT>& entity) -> void {
+    Add(entity.name_id);
+    if (entity.parent_scope_id.has_value()) {
+      Add(sem_ir->name_scopes().Get(entity.parent_scope_id).inst_id());
+    }
+  }
+
+  auto Add(FunctionId function_id) -> void {
+    AddEntity(sem_ir->functions().Get(function_id));
+  }
+
+  auto Add(ClassId class_id) -> void {
+    AddEntity(sem_ir->classes().Get(class_id));
+  }
+
+  auto Add(VtableId vtable_id) -> void {
+    const auto& vtable = sem_ir->vtables().Get(vtable_id);
+    if (vtable.class_id.has_value()) {
+      Add(vtable.class_id);
+    }
+    Add(vtable.virtual_functions_id);
+  }
+
+  auto Add(InterfaceId interface_id) -> void {
+    AddEntity(sem_ir->interfaces().Get(interface_id));
+  }
+
+  auto Add(AssociatedConstantId assoc_const_id) -> void {
+    AddEntity<AssociatedConstant>(
+        sem_ir->associated_constants().Get(assoc_const_id));
+  }
+
+  auto Add(ImplId impl_id) -> void {
+    const auto& impl = sem_ir->impls().Get(impl_id);
+    Add(sem_ir->constant_values().Get(impl.self_id));
+    Add(sem_ir->constant_values().Get(impl.constraint_id));
+    Add(impl.parent_scope_id);
+  }
+
+  auto Add(DeclInstBlockId /*block_id*/) -> void {
+    // Intentionally exclude decl blocks from fingerprinting. Changes to the
+    // decl block don't change the identity of the declaration.
+  }
+
+  auto Add(LabelId /*block_id*/) -> void {
+    CARBON_FATAL("Should never fingerprint a label");
+  }
+
+  auto Add(FacetTypeId facet_type_id) -> void {
+    const auto& facet_type = sem_ir->facet_types().Get(facet_type_id);
+    auto add_constraints = [&](auto constraints) {
+      contents.push_back(constraints.size());
+      for (auto [first, second] : constraints) {
+        Add(first);
+        Add(second);
+      }
+    };
+    add_constraints(facet_type.extend_constraints);
+    add_constraints(facet_type.self_impls_constraints);
+    add_constraints(facet_type.rewrite_constraints);
+    contents.push_back(facet_type.other_requirements);
+  }
+
+  auto Add(GenericId generic_id) -> void {
+    if (!generic_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    Add(sem_ir->generics().Get(generic_id).decl_id);
+  }
+
+  auto Add(SpecificId specific_id) -> void {
+    if (!specific_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    const auto& specific = sem_ir->specifics().Get(specific_id);
+    Add(specific.generic_id);
+    Add(specific.args_id);
+  }
+
+  auto Add(SpecificInterfaceId specific_interface_id) -> void {
+    if (!specific_interface_id.has_value()) {
+      AddInvalid();
+      return;
+    }
+    const auto& interface =
+        sem_ir->specific_interfaces().Get(specific_interface_id);
+    Add(interface.interface_id);
+    Add(interface.specific_id);
+  }
+
+  auto Add(const llvm::APInt& value) -> void {
+    unsigned width = value.getBitWidth();
+    contents.push_back(width);
+    for (auto word : llvm::seq((width + 63) / 64)) {
+      // TODO: Is there a better way to copy the words from an APInt?
+      unsigned start = 64 * word;
+      contents.push_back(
+          value.extractBitsAsZExtValue(std::min(64U, width - start), start));
+    }
+  }
+
+  auto Add(IntId int_id) -> void { Add(sem_ir->ints().Get(int_id)); }
+
+  auto Add(FloatId float_id) -> void {
+    Add(sem_ir->floats().Get(float_id).bitcastToAPInt());
+  }
+
+  auto Add(RealId real_id) -> void {
+    const auto& real = sem_ir->reals().Get(real_id);
+    Add(real.mantissa);
+    Add(real.exponent);
+    contents.push_back(real.is_decimal);
+  }
+
+  auto Add(PackageNameId package_id) -> void {
+    if (auto ident_id = package_id.AsIdentifierId(); ident_id.has_value()) {
+      AddString(sem_ir->identifiers().Get(ident_id));
+    } else {
+      // TODO: May collide with a user package of the same name. Consider using
+      // a different value.
+      AddString(package_id.AsSpecialName());
+    }
+  }
+
+  auto Add(LibraryNameId lib_name_id) -> void {
+    if (lib_name_id == LibraryNameId::Default) {
+      AddString("");
+    } else if (lib_name_id == LibraryNameId::Error) {
+      AddString("<error>");
+    } else if (lib_name_id.has_value()) {
+      Add(lib_name_id.AsStringLiteralValueId());
+    } else {
+      AddInvalid();
+    }
+  }
+
+  auto Add(ImportIRId ir_id) -> void {
+    const auto* ir = sem_ir->import_irs().Get(ir_id).sem_ir;
+    Add(ir->package_id());
+    Add(ir->library_id());
+  }
+
+  auto Add(ImportIRInstId ir_inst_id) -> void {
+    auto ir_inst = sem_ir->import_ir_insts().Get(ir_inst_id);
+    AddInFile(sem_ir->import_irs().Get(ir_inst.ir_id()).sem_ir,
+              ir_inst.inst_id());
+  }
+
+  template <typename T>
+    requires(SameAsOneOf<T, BoolValue, CharId, CompileTimeBindIndex,
+                         ElementIndex, FloatKind, IntKind, CallParamIndex>)
+  auto Add(T arg) -> void {
+    // Index-like ID: just include the value directly.
+    contents.push_back(arg.index);
+  }
+
+  template <typename T>
+    requires(SameAsOneOf<T, AnyRawId, ExprRegionId, LocId>)
+  auto Add(T /*arg*/) -> void {
+    CARBON_FATAL("Unexpected instruction operand kind {0}", typeid(T).name());
+  }
+
+  using AddFnT = auto(Worklist& worklist, int32_t arg) -> void;
+
+  // Returns the arg handler for an `IdKind`.
+  template <typename... Types>
+  static auto GetAddFn(TypeEnum<Types...> id_kind) -> AddFnT* {
+    static constexpr std::array<AddFnT*, IdKind::NumValues> Table = {
+        [](Worklist& worklist, int32_t arg) {
+          worklist.Add(Inst::FromRaw<Types>(arg));
+        }...,
+        // Invalid and None handling (ordering-sensitive).
+        [](auto...) { CARBON_FATAL("Unexpected invalid IdKind"); },
+        [](auto...) {},
+    };
+    return Table[id_kind.ToIndex()];
+  }
+
+  // Add an instruction argument to the contents of the current instruction.
+  auto AddWithKind(Inst::ArgAndKind arg) -> void {
+    GetAddFn(arg.kind())(*this, arg.value());
+  }
+
+  // Ensure all the instructions on the todo list have fingerprints. To avoid a
+  // re-lookup, returns the fingerprint of the first instruction on the todo
+  // list, and requires the todo list to be non-empty.
+  auto Run() -> uint64_t {
+    CARBON_CHECK(!todo.empty());
+    while (true) {
+      const size_t init_size = todo.size();
+      auto [next_sem_ir, next] = todo.back();
+
+      sem_ir = next_sem_ir;
+      contents.clear();
+
+      if (!std::holds_alternative<InstId>(next)) {
+        // Add the contents of the `next` instruction so they all contribute to
+        // the `contents`.
+        if (auto* impl_id = std::get_if<ImplId>(&next)) {
+          Add(*impl_id);
+        } else if (auto* inst_block_id = std::get_if<InstBlockId>(&next)) {
+          Add(*inst_block_id);
+        }
+
+        // If we didn't add any more work, then we have a fingerprint for the
+        // `next` instruction, otherwise we wait until that work is completed.
+        // If the `next` is the last thing in `todo`, we return the fingerprint.
+        // Otherwise we would just discard it because we don't currently cache
+        // the fingerprint for things other than `InstId`, but we really only
+        // expect other `next` types to be at the bottom of the `todo` stack
+        // since they are not added to `todo` during Run().
+        if (todo.size() == init_size) {
+          auto fingerprint = Finish();
+          todo.pop_back();
+          CARBON_CHECK(todo.empty(),
+                       "A non-InstId was inserted into `todo` during Run()");
+          return fingerprint;
+        }
+
+        // Move on to processing the instructions added above; we will come
+        // back to this branch once they are done.
+        continue;
+      }
+
+      auto next_inst_id = std::get<InstId>(next);
+
+      // If we already have a fingerprint for this instruction, we have nothing
+      // to do. Just pop it from `todo`.
+      if (auto fingerprint = GetFingerprint(next_sem_ir, next_inst_id)) {
+        todo.pop_back();
+        if (todo.empty()) {
+          return fingerprint;
+        }
+        continue;
+      }
+
+      // Keep this instruction in `todo` for now. If we add more work, we'll
+      // finish that work and process this instruction again, and if not, we'll
+      // pop the instruction at the end of the loop.
+      auto inst = next_sem_ir->insts().Get(next_inst_id);
+
+      // Add the instruction's fields to the contents.
+      Add(inst.kind());
+
+      // Don't include the type if it's `type` or `<error>`, because those types
+      // are self-referential.
+      if (inst.type_id() != TypeType::TypeId &&
+          inst.type_id() != ErrorInst::TypeId) {
+        Add(inst.type_id());
+      }
+
+      AddWithKind(inst.arg0_and_kind());
+      AddWithKind(inst.arg1_and_kind());
+
+      // If we didn't add any work, we have a fingerprint for this instruction;
+      // pop it from the todo list. Otherwise, we leave it on the todo list so
+      // we can compute its fingerprint once we've finished the work we added.
+      if (todo.size() == init_size) {
+        uint64_t fingerprint = Finish();
+        SetFingerprint(next_sem_ir, next_inst_id, fingerprint);
+        todo.pop_back();
+        if (todo.empty()) {
+          return fingerprint;
+        }
+      }
+    }
+  }
+};
+}  // namespace
+
+auto InstFingerprinter::GetOrCompute(const File* file, InstId inst_id)
+    -> uint64_t {
+  Worklist worklist = {.todo = {{file, inst_id}},
+                       .fingerprints = &fingerprints_};
+  return worklist.Run();
+}
+
+auto InstFingerprinter::GetOrCompute(const File* file,
+                                     InstBlockId inst_block_id) -> uint64_t {
+  Worklist worklist = {.todo = {{file, inst_block_id}},
+                       .fingerprints = &fingerprints_};
+  return worklist.Run();
+}
+
+auto InstFingerprinter::GetOrCompute(const File* file, ImplId impl_id)
+    -> uint64_t {
+  Worklist worklist = {.todo = {{file, impl_id}},
+                       .fingerprints = &fingerprints_};
+  return worklist.Run();
+}
+
+}  // namespace Carbon::SemIR

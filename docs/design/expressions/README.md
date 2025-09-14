@@ -16,6 +16,7 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
     -   [Unqualified names](#unqualified-names)
     -   [Qualified names and member access](#qualified-names-and-member-access)
 -   [Operators](#operators)
+-   [Suffix operators](#suffix-operators)
 -   [Conversions and casts](#conversions-and-casts)
 -   [`if` expressions](#if-expressions)
 -   [Numeric type literal expressions](#numeric-type-literal-expressions)
@@ -63,20 +64,23 @@ graph BT
 
     top((" "))
 
-    memberAccess>"x.y<br>
-                  x.(...)<br>
-                  x->y<br>
-                  x->(...)"]
-    click memberAccess "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/member_access.md"
+    suffixOps{"x.y
+               x.(...)
+               x->y
+               x->(...)
+               x(...)
+               x[y]"}
+    click suffixOps "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/README.md#suffix-operators"
 
-    constType["const T"]
+    qualifiedType["const T
+                   partial T"]
     click pointer-type "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/type_operators.md"
 
     pointerType{"T*"}
     click pointer-type "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/type_operators.md"
 
-    pointer{"*x<br>
-             &x<br>"}
+    pointer{"*x
+             &x"}
     click pointer "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/pointer.md"
 
     negation["-x"]
@@ -85,7 +89,8 @@ graph BT
     complement["^x"]
     click complement "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/bitwise.md"
 
-    incDec["++x;<br>--x;"]
+    incDec["++x;
+            --x;"]
     click incDec "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/assignment.md"
 
     unary((" "))
@@ -93,11 +98,11 @@ graph BT
     as["x as T"]
     click as "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/implicit_conversions.md"
 
-    multiplication>"x * y<br>
+    multiplication>"x * y
                     x / y"]
     click multiplication "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/arithmetic.md"
 
-    addition>"x + y<br>
+    addition>"x + y
               x - y"]
     click addition "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/arithmetic.md"
 
@@ -111,15 +116,19 @@ graph BT
     click bitwise_or "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/bitwise.md"
     click bitwise_xor "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/bitwise.md"
 
-    shift["x << y<br>
+    shift["x << y
            x >> y"]
     click shift "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/bitwise.md"
 
-    comparison["x == y<br>
-                x != y<br>
-                x < y<br>
-                x <= y<br>
-                x > y<br>
+    binaryOps((" "))
+
+    where["T where R"]
+
+    comparison["x == y
+                x != y
+                x < y
+                x <= y
+                x > y
                 x >= y"]
     click comparison "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/expressions/comparison_operators.md"
 
@@ -141,29 +150,43 @@ graph BT
 
     insideParens["(...)"]
 
-    assignment["x = y;<br>x $= y;"]
+    assignment["x = y;
+                x $= y;"]
     click assignment "https://github.com/carbon-language/carbon-lang/blob/trunk/docs/design/assignment.md"
 
     expressionStatement["x;"]
 
     top --> parens & braces & unqualifiedName
 
-    constType --> top
-    pointerType --> constType
-    as --> pointerType
+    suffixOps --> top
 
-    memberAccess --> top
-    pointer --> memberAccess
+    qualifiedType --> suffixOps
+    pointerType --> qualifiedType
+
+    pointer --> suffixOps
     negation & complement & incDec --> pointer
-    unary --> negation & complement
-    %% Use a longer arrow here to put `not` next to `and` and `or`.
-    not -------> memberAccess
-    as & multiplication & modulo & bitwise_and & bitwise_or & bitwise_xor & shift --> unary
+    unary --> pointerType & negation & complement
+
+    %% Use a longer arrow here to put `not` next to other unary operators
+    not ---> suffixOps
+
+    %% `as` at the same level as `where` and comparisons
+    as -----> unary
+
+    multiplication & modulo & bitwise_and & bitwise_or & bitwise_xor & shift --> unary
     addition --> multiplication
-    comparison --> as & addition & modulo & bitwise_and & bitwise_or & bitwise_xor & shift
+    binaryOps --> addition & modulo & bitwise_and & bitwise_or & bitwise_xor & shift
+
+    where --> binaryOps
+    comparison --> binaryOps
     logicalOperand --> comparison & not
+
+    %% This helps group `and` and `or` together
+    classDef hidden display: none;
+    HIDDEN:::hidden ~~~ logicalOperand
+
     and & or --> logicalOperand
-    logicalExpression --> and & or
+    logicalExpression --> as & where & and & or
     if & expressionStatement --> logicalExpression
     insideParens & assignment --> if
 ```
@@ -252,7 +275,7 @@ expression preceding the period. In a struct literal, the entity is the struct
 type. For example:
 
 ```
-package Foo api;
+package Foo;
 namespace N;
 fn N.F() {}
 
@@ -302,6 +325,8 @@ Most expressions are modeled as operators:
 
 | Category   | Operator                            | Syntax    | Function                                                              |
 | ---------- | ----------------------------------- | --------- | --------------------------------------------------------------------- |
+| Call       | `()` (unary)                        | `x(...)`  | Function call: the value returned by calling the function `x`.        |
+| Call       | [`[]`](indexing.md) (unary)         | `x[y]`    | Subscripting or indexing: returns the element `y` of `x`.             |
 | Pointer    | [`*`](pointer_operators.md) (unary) | `*x`      | Pointer dereference: the object pointed to by `x`.                    |
 | Pointer    | [`&`](pointer_operators.md) (unary) | `&x`      | Address-of: a pointer to the object `x`.                              |
 | Arithmetic | [`-`](arithmetic.md) (unary)        | `-x`      | The negation of `x`.                                                  |
@@ -330,6 +355,23 @@ Most expressions are modeled as operators:
 The binary arithmetic and bitwise operators also have
 [compound assignment](/docs/design/assignment.md) forms. These are statements
 rather than expressions, and do not produce a value.
+
+## Suffix operators
+
+These operators act like unary postfix operators for purposes of precedence:
+
+-   [Member access operators](member_access.md), like `x.y` and the
+    dereferencing variant `x->y`, only have an expression on their left-hand
+    side. The right-hand side is a name.
+-   The [compound member access operators](member_access.md), `x.(...)` and
+    `x->(...)`, have an expression as their second operand, but put that
+    expression in parentheses and so it doesn't participate in the precedence
+    considerations of its first operand.
+-   The [indexing operator](indexing.md), `x[y]`, similarly puts its second
+    operand in matching square brackets.
+-   The call operator, `x(...)`, takes a comma-separated list of arguments, but
+    again puts them in parentheses that clearly separate them for precedence
+    purposes.
 
 ## Conversions and casts
 

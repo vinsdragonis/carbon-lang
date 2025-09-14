@@ -21,7 +21,7 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 <a href="docs/images/snippets.md#quicksort">
 <!--
 Edit snippet in docs/images/snippets.md and:
-https://drive.google.com/drive/folders/1-rsUjiya7dSZ87L8kpZmu3MZghRVxzLA
+https://drive.google.com/drive/folders/1QrBXiy_X74YsOueeC0IYlgyolWIhvusB
 -->
 <img src="docs/images/quicksort_snippet.svg" align="right" width="575"
      alt="Quicksort code in Carbon. Follow the link to read more.">
@@ -29,10 +29,9 @@ https://drive.google.com/drive/folders/1-rsUjiya7dSZ87L8kpZmu3MZghRVxzLA
 
 <!--
 Don't let the text wrap too narrowly to the left of the above image.
-The `div` reduces the vertical height.
-GitHub will autolink `img`, but won't produce a link when `href="#"`.
+The `div` reduces the vertical height. The `picture` prevents autolinking.
 -->
-<div><a href="#"><img src="docs/images/bumper.png"></a></div>
+<div><picture><img src="docs/images/bumper.png" alt=""></picture></div>
 
 **Fast and works with C++**
 
@@ -124,9 +123,9 @@ and provides a deeper view into our goals for the Carbon project and language.
 
 ## Project status
 
-Carbon Language is currently an experimental project. There is no working
-compiler or toolchain. You can see the demo interpreter for Carbon on
-[compiler-explorer.com](http://carbon.compiler-explorer.com/).
+Carbon Language is currently an experimental project. We are hard at work on a
+toolchain implementation with compiler and linker. You can try out the current
+state at [compiler-explorer.com](http://carbon.compiler-explorer.com/).
 
 We want to better understand whether we can build a language that meets our
 successor language criteria, and whether the resulting language can gather a
@@ -146,18 +145,21 @@ and the language:
     -   Operator overloading
     -   Lexical and syntactic structure
     -   Code organization and modular structure
--   A prototype interpreter demo that can both run isolated examples and gives a
-    detailed analysis of the specific semantic model and abstract machine of
-    Carbon. We call this the [Carbon Explorer](/explorer/).
+-   An under-development [compiler and toolchain](/toolchain/) that will compile
+    Carbon (and eventually C++ code as well) into standard executable code. This
+    is where most of our current implementation efforts are directed.
+    -   Historically, there was also a prototype
+        [explorer](https://github.com/carbon-language/explorer) interpreter that
+        implemented an older version of the Carbon language design, but is no
+        longer under development and has been archived.
 
-If you're interested in contributing, we would love help
-[completing the 0.1 language designs](/docs/project/roadmap.md#complete-design-coverage-of-the-01-languages-necessary-features),
-and
-[completing the Carbon Explorer implementation of this design](/docs/project/roadmap.md#complete-01-language-implementation-coverage-in-the-carbon-explorer).
-We are also currently working to get more broad feedback and participation from
-the C++ community. Beyond that, we plan to prioritize C++ interoperability and a
-realistic toolchain that implements the 0.1 language and can be used to evaluate
-Carbon in more detail.
+If you're interested in contributing, we're currently focused on developing the
+Carbon toolchain until it can
+[support Carbon ↔ C++ interop](/docs/project/roadmap.md#access-most-non-template-c-apis-in-carbon).
+Beyond that, we plan to continue developing the design and toolchain until we
+can ship the
+[0.1 language](/docs/project/milestones.md#milestone-01-a-minimum-viable-product-mvp-for-evaluation)
+and support evaluating Carbon in more detail.
 
 You can see our [full roadmap](/docs/project/roadmap.md) for more details.
 
@@ -242,76 +244,171 @@ and with a smooth evolutionary path.
 
 Safety, and especially
 [memory safety](https://en.wikipedia.org/wiki/Memory_safety), remains a key
-challenge for C++ and something a successor language needs to address. Our
-initial priority and focus is on immediately addressing important, low-hanging
-fruit in the safety space:
+challenge for C++ and something a successor language needs to address.
+
+We plan to support a two step migration process:
+
+1. Highly automated, minimal supervision migration from C++ to a dialect of
+   Carbon designed for C++ interop and migration.
+2. Incremental refactoring of the Carbon code to adopt memory-safe designs,
+   patterns, and APIs.
+
+We also want to address important, low-hanging fruit in the safety space
+immediately when migrating into Carbon:
 
 -   Tracking uninitialized states better, increased enforcement of
-    initialization, and systematically providing hardening against
-    initialization bugs when desired.
--   Designing fundamental APIs and idioms to support dynamic bounds checks in
-    debug and hardened builds.
--   Having a default debug build mode that is both cheaper and more
-    comprehensive than existing C++ build modes even when combined with
+    initialization, and hardening against initialization bugs when needed.
+-   Designing fundamental APIs and idioms to support dynamic bounds checking.
+-   Switching from undefined behavior to erroneous behavior wherever possible,
+    and marking the remaining undefined behavior with visible `unsafe` syntax.
+-   Having a default debug build mode that has less runtime overhead while being
+    more comprehensive than existing C++ debug build modes combined with
     [Address Sanitizer](https://github.com/google/sanitizers/wiki/AddressSanitizer).
 
-Once we can migrate code into Carbon, we will have a simplified language with
-room in the design space to add any necessary annotations or features, and
-infrastructure like [generics](#generics) to support safer design patterns.
-Longer term, we will build on this to introduce **a safe Carbon subset**. This
-will be a large and complex undertaking, and won't be in the 0.1 design.
-Meanwhile, we are closely watching and learning from efforts to add memory safe
-semantics onto C++ such as Rust-inspired
-[lifetime annotations](https://discourse.llvm.org/t/rfc-lifetime-annotations-for-c/61377).
+For more details, see our [safety design](/docs/design/safety).
 
 ## Getting started
 
-As there is no compiler yet, to try out Carbon, you can use the Carbon explorer
-to interpret Carbon code and print its output. You can try it out immediately at
-[compiler-explorer.com](http://carbon.compiler-explorer.com/).
+To try out Carbon immediately in your browser, you can use the toolchain at:
+[carbon.compiler-explorer.com](http://carbon.compiler-explorer.com/).
 
-To build the Carbon explorer yourself, you'll need to install dependencies
-(Bazel, Clang, libc++), and then you can run:
+We are developing a traditional toolchain for Carbon that can compile and link
+programs. However, Carbon is still an early, experimental project, and so we
+only have very experimental nightly releases of the Carbon toolchain available
+to download, and only on limited platforms. If you are using a recent Ubuntu
+Linux or similar (Debian, WSL, etc.), you can try these out by going to our
+[releases](https://github.com/carbon-language/carbon-lang/releases) page and
+download the latest nightly toolchain tar file:
+`carbon_toolchain-0.0.0-0.nightly.YYYY.MM.DD.tar.gz`. Then you can try it out:
 
 ```shell
+# A variable with the nightly version from yesterday:
+VERSION="$(date -d yesterday +0.0.0-0.nightly.%Y.%m.%d)"
+
+# Get the release
+wget https://github.com/carbon-language/carbon-lang/releases/download/v${VERSION}/carbon_toolchain-${VERSION}.tar.gz
+
+# Unpack the toolchain:
+tar -xvf carbon_toolchain-${VERSION}.tar.gz
+
+# Create a simple Carbon source file:
+echo "import Core library \"io\"; fn Run() { Core.Print(42); }" > forty_two.carbon
+
+# Compile to an object file:
+./carbon_toolchain-${VERSION}/bin/carbon compile \
+  --output=forty_two.o forty_two.carbon
+
+# Install minimal system libraries used for linking. Note that installing `gcc`
+# or `g++` for compiling C/C++ code with GCC will also be sufficient, these are
+# just the specific system libraries Carbon linking still uses.
+sudo apt install libgcc-11-dev
+
+# Link to an executable:
+./carbon_toolchain-${VERSION}/bin/carbon link \
+  --output=forty_two forty_two.o
+
+# Run it:
+./forty_two
+```
+
+As a reminder, the toolchain is still very early and many things don't yet work.
+Please hold off on filing lots of bugs: we know many parts of this don't work
+yet or may not work on all systems. We expect to have releases that are much
+more robust and reliable that you can try out when we reach our
+[0.1 milestone](/docs/project/milestones.md#milestone-01-a-minimum-viable-product-mvp-for-evaluation).
+
+If you want to build Carbon's toolchain yourself or are thinking about
+contributing fixes or improvements to Carbon, you'll need to install our
+[build dependencies](/docs/project/contribution_tools.md#setup-commands) (Clang,
+LLD, libc++) and check out the Carbon repository. For example, on Debian or
+Ubuntu:
+
+```shell
+# Update apt.
+sudo apt update
+
+# Install tools.
+sudo apt install \
+  clang \
+  libc++-dev \
+  libc++abi-dev \
+  lld
+
 # Download Carbon's code.
 $ git clone https://github.com/carbon-language/carbon-lang
 $ cd carbon-lang
-
-# Build and run the explorer.
-$ bazel run //explorer -- ./explorer/testdata/print/format_only.carbon
 ```
 
-For complete instructions, including installing dependencies, see our
+Then you can try out our toolchain which has a very early-stage compiler for
+Carbon:
+
+```shell
+# Build and run the toolchain's help to get documentation on the command line.
+$ ./scripts/run_bazelisk.py run //toolchain -- help
+```
+
+For complete instructions, including installing dependencies on various
+different platforms, see our
 [contribution tools documentation](/docs/project/contribution_tools.md).
 
 Learn more about the Carbon project:
 
 -   [Project goals](/docs/project/goals.md)
 -   [Language design overview](/docs/design)
--   [Carbon Explorer](/explorer)
+-   [Carbon Toolchain](/toolchain)
 -   [FAQ](/docs/project/faq.md)
 
 ## Conference talks
 
-Past Carbon focused talks from the community:
+Carbon focused talks from the community:
 
-### 2022
+### 2024
 
--   [Carbon Language: An experimental successor to C++](https://www.youtube.com/watch?v=omrY53kbVoA),
-    CppNorth
--   [Carbon Language: Syntax and trade-offs](https://www.youtube.com/watch?v=9Y2ivB8VaIs),
-    Core C++
+-   Generic implementation strategies in Carbon and Clang, LLVM Developers'
+    Meeting ([video](https://youtu.be/j0BL52NdjAU),
+    [slides](https://chandlerc.blog/slides/2024-llvm-generic-implementation/#/))
+-   The Carbon Language: Road to 0.1, NDC {TechTown}
+    ([video](https://youtu.be/bBvLmDJrzvI),
+    [slides](https://chandlerc.blog/slides/2024-ndc-techtown-carbon-road-to-0-dot-1))
+-   How designing Carbon with C++ interop taught me about C++ variadics and
+    overloads, CppNorth ([video](https://youtu.be/8SGMy9ENGz8),
+    [slides](https://chandlerc.blog/slides/2024-cppnorth-design-stories))
+-   Generic Arity: Definition-Checked Variadics in Carbon, C++Now
+    ([video](https://youtu.be/Y_px536l_80),
+    [slides](https://docs.google.com/presentation/d/10aM1mFMN6Cd5ZkE4OfeiZtSnkVNbo33N-V0et21umww/edit))
+-   Carbon: An experiment in different tradeoffs, panel session, EuroLLVM
+    ([video](https://youtu.be/Za_KWj5RMR8),
+    [slides](https://llvm.org/devmtg/2024-04/slides/LightningTalks/Smith-Carbons-high-level-semanticIR.pdf))
+    -   [Alex Bradbury's notes](https://muxup.com/2024q2/notes-from-the-carbon-panel-session-at-eurollvm)
+-   Carbon's high-level semantic IR lightning talk, EuroLLVM
+    ([video](https://youtu.be/vIWT4RhUcyw))
 
 ### 2023
 
--   [Carbon’s Successor Strategy: From C++ interop to memory safety](https://www.youtube.com/watch?v=1ZTJ9omXOQ0),
-    C++Now
--   Definition-Checked Generics
-    ([Part 1](https://www.youtube.com/watch?v=FKC8WACSMP0),
-    [Part 2](https://www.youtube.com/watch?v=VxQ3PwxiSzk)), C++Now
--   [Modernizing Compiler Design for Carbon’s Toolchain](https://www.youtube.com/watch?v=ZI198eFghJk),
-    C++Now
+-   Carbon’s Successor Strategy: From C++ interop to memory safety, C++Now
+    ([video](https://youtu.be/1ZTJ9omXOQ0),
+    [slides](https://chandlerc.blog/slides/2023-cppnow-carbon-strategy/index.html#/))
+-   Definition-Checked Generics, C++Now
+    -   Part 1 ([video](https://youtu.be/FKC8WACSMP0),
+        [slides](https://chandlerc.blog/slides/2023-cppnow-generics-1/#/))
+    -   Part 2 ([video](https://youtu.be/VxQ3PwxiSzk),
+        [slides](https://chandlerc.blog/slides/2023-cppnow-generics-2/#/))
+-   Modernizing Compiler Design for Carbon’s Toolchain, C++Now
+    ([video](https://youtu.be/ZI198eFghJk),
+    [slides](https://chandlerc.blog/slides/2023-cppnow-compiler/index.html#/))
+
+### 2022
+
+-   Carbon Language: Syntax and trade-offs, Core C++
+    ([video](https://youtu.be/9Y2ivB8VaIs),
+    [slides](https://docs.google.com/presentation/d/1znvL12xCuEfcsP6tpPdrQPnh-UoPFOLnC_RVXZteYaM/edit))
+-   Carbon Language: An experimental successor to C++, CppNorth
+    ([video](https://youtu.be/omrY53kbVoA),
+    [slides](https://chandlerc.blog/slides/2022-07-19-cppnorth-keynote/#/))
+
+### Other videos
+
+We additionally have [toolchain videos](/toolchain/docs/README.md#videos).
 
 ## Join us
 
@@ -321,8 +418,6 @@ contribute.
 
 -   Most of Carbon's design discussions occur on
     [Discord](https://discord.gg/ZjVdShJDAs).
--   Carbon is a
-    [Google Summer of Code 2023 organization](https://summerofcode.withgoogle.com/programs/2023/organizations/carbon-language).
 -   To watch for major release announcements, subscribe to our
     [Carbon release post on GitHub](https://github.com/carbon-language/carbon-lang/discussions/1020)
     and [star carbon-lang](https://github.com/carbon-language/carbon-lang).
@@ -337,8 +432,6 @@ You can also directly:
 -   [Contribute to the language design](CONTRIBUTING.md#contributing-to-the-language-design):
     feedback on design, new design proposal
 -   [Contribute to the language implementation](CONTRIBUTING.md#contributing-to-the-language-implementation)
-    -   [Carbon Explorer](/explorer/): bug report, bug fix, language feature
-        implementation
     -   [Carbon Toolchain](/toolchain/), and project infrastructure
 
 You can **check out some

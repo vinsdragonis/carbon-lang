@@ -4,14 +4,14 @@
 
 #include <gtest/gtest.h>
 
-#include "llvm/Support/InitLLVM.h"
+#include "common/init_llvm.h"
+#include "testing/base/global_exe_path.h"
 
 auto main(int argc, char** argv) -> int {
+  // Initialize LLVM first, as that will also handle ensuring UTF-8 encoding.
+  Carbon::InitLLVM init_llvm(argc, argv);
+
+  Carbon::Testing::SetExePath(argv[0]);
   testing::InitGoogleTest(&argc, argv);
-  llvm::setBugReportMsg(
-      "Please report issues to "
-      "https://github.com/carbon-language/carbon-lang/issues and include the "
-      "crash backtrace.\n");
-  llvm::InitLLVM init_llvm(argc, argv);
   return RUN_ALL_TESTS();
 }

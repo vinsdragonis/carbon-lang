@@ -5,14 +5,20 @@
 // ARGS: compile --phase=lex %s
 //
 // AUTOUPDATE
+// TIP: To test this file alone, run:
+// TIP:   bazel test //toolchain/testing:file_test --test_arg=--file_tests=toolchain/driver/testdata/fail_errors_sorted.carbon
+// TIP: To dump output, run:
+// TIP:   bazel run //toolchain/testing:file_test -- --dump_output --file_tests=toolchain/driver/testdata/fail_errors_sorted.carbon
 
-// CHECK:STDERR: fail_errors_sorted.carbon:[[@LINE+3]]:24: Closing symbol does not match most recent opening symbol.
+// CHECK:STDERR: fail_errors_sorted.carbon:[[@LINE+4]]:24: error: opening symbol without a corresponding closing symbol
 // CHECK:STDERR: fn run(String program) {
 // CHECK:STDERR:                        ^
+// CHECK:STDERR:
 fn run(String program) {
   return True;
 
-// CHECK:STDERR: fail_errors_sorted.carbon:[[@LINE+3]]:10: Invalid digit 'a' in decimal numeric literal.
+// CHECK:STDERR: fail_errors_sorted.carbon:[[@LINE+4]]:10: error: invalid digit 'a' in decimal numeric literal
 // CHECK:STDERR: var x = 3a;
 // CHECK:STDERR:          ^
+// CHECK:STDERR:
 var x = 3a;

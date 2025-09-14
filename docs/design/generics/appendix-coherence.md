@@ -121,7 +121,7 @@ this:
 
     fn SomethingWeirdHappens() {
       var unchained_melody: SongLib.Song = ...;
-      var song_set: auto = Containers.HashSet(SongLib.Song).Create();
+      var song_set: auto = Containers.HashSet(SongLib.Song).Make();
       song_set.Add(unchained_melody);
       // Either this is a compile error or does something unexpected.
       if (SongUtil.IsInHashSet(unchained_melody, &song_set)) {
@@ -141,7 +141,7 @@ function from `SongHashArtistAndTitle` which returns a different hash value for
 
 **Background:** [This post](https://gist.github.com/nikomatsakis/1421744)
 discusses the hashtable problem in the context of Haskell, and
-[this 2011 Rust followup](https://mail.mozilla.org/pipermail/rust-dev/2011-December/001036.html)
+[this 2011 Rust followup](https://www.mail-archive.com/rust-dev@mozilla.org/msg01024.html)
 discusses how to detect problems at compile time.
 
 ## Rejected alternative: no orphan rule
@@ -191,7 +191,7 @@ body of the `SomethingWeirdHappens` function.
 
 This idea is discussed briefly in section 5.4 on separate compilation of WG21
 proposal n1848 for implementing "Indiana" C++0x concepts
-([1](https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.86.9526&rep=rep1&type=pdf),
+([1](https://citeseerx.ist.psu.edu/pdf/6e1398d22fd6a3e31aba2519d7a00a8f0d93e7e8),
 and [2](https://wg21.link/n1848)).
 
 This has some downsides:
@@ -235,3 +235,9 @@ either:
     like
     [dynamic implementation binding](#rejected-variation-dynamic-implementation-binding)
     (though perhaps with a monomorphization cost instead of a runtime cost).
+
+In addition, this can create unsoundness when combined with dynamic downcasts
+and a more complex, less predictable implementation model as
+[discussed in Swift](https://forums.swift.org/t/retroactive-conformances-dynamic-downcast-type-unsoundness/73890).
+This approach would be particularly complex in Carbon due to supporting
+[impl specialization](terminology.md#specialization).

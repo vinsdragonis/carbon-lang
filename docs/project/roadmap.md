@@ -10,120 +10,116 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 ## Table of contents
 
--   [Objective for 2023: get ready to evaluate the Carbon Language.](#objective-for-2023-get-ready-to-evaluate-the-carbon-language)
--   [Key results in 2023](#key-results-in-2023)
-    -   [A concrete definition of our Minimum Viable Product for evaluation, the 0.1 language](#a-concrete-definition-of-our-minimum-viable-product-for-evaluation-the-01-language)
-    -   [Complete design coverage of the 0.1 language's necessary features](#complete-design-coverage-of-the-01-languages-necessary-features)
-    -   [Complete 0.1 language implementation coverage in the Carbon Explorer](#complete-01-language-implementation-coverage-in-the-carbon-explorer)
-    -   [A toolchain that can build a minimal mixed C++ and Carbon program](#a-toolchain-that-can-build-a-minimal-mixed-c-and-carbon-program)
-    -   [Give talks at 2-3 conferences covering 3-4 different Carbon topics](#give-talks-at-2-3-conferences-covering-3-4-different-carbon-topics)
--   [Beyond 2023](#beyond-2023)
-    -   [Potential 2024 goals: ship a working 0.1 language for evaluation](#potential-2024-goals-ship-a-working-01-language-for-evaluation)
-    -   [Potential 2025-2026 goals: finish 0.2 language, stop experimenting](#potential-2025-2026-goals-finish-02-language-stop-experimenting)
-    -   [Potential goals _beyond_ 2026: ship 1.0 language & organization](#potential-goals-beyond-2026-ship-10-language--organization)
+-   [Objectives for 2025: demo of C++ interop and design of memory safety](#objectives-for-2025-demo-of-c-interop-and-design-of-memory-safety)
+-   [Key results in 2025](#key-results-in-2025)
+    -   [Access most non-template C++ APIs in Carbon](#access-most-non-template-c-apis-in-carbon)
+    -   [Access non-generic Carbon APIs in C++](#access-non-generic-carbon-apis-in-c)
+    -   [Detailed safety strategy update, including expected tradeoffs and prioritization](#detailed-safety-strategy-update-including-expected-tradeoffs-and-prioritization)
+    -   [Design for compile-time temporal and mutation memory safety](#design-for-compile-time-temporal-and-mutation-memory-safety)
+    -   [Give talks at 2-3 conferences about Carbon topics, expanding our audience](#give-talks-at-2-3-conferences-about-carbon-topics-expanding-our-audience)
+-   [Beyond 2025](#beyond-2025)
+    -   [Potential 2026 goals: ship a working 0.1 language for evaluation](#potential-2026-goals-ship-a-working-01-language-for-evaluation)
+    -   [Potential 2027-2028 goals: finish 0.2 language, stop experimenting](#potential-2027-2028-goals-finish-02-language-stop-experimenting)
+    -   [Potential goals _beyond_ 2028: ship 1.0 language & organization](#potential-goals-beyond-2028-ship-10-language--organization)
 
 <!-- tocstop -->
 
-## Objective for 2023: get ready to evaluate the Carbon Language.
+## Objectives for 2025: demo of C++ interop and design of memory safety
 
-Our focus throughout 2023 will be to get the Carbon Language and project ready
-for serious evaluation of the experiment. There are two aspects to this
-evaluation:
+We have two areas of focus for 2025:
 
-1. The language and tools need to be complete enough to evaluate.
-2. The users and communities we are targeting need both context and awareness of
-   the technical ideas and design principles on which Carbon is built.
+1. Get a major chunk of our C++ interop working to the point where we can
+   demonstrate it in realistic scenarios.
+2. Build a concrete and specific design for memory safety in Carbon.
 
-## Key results in 2023
+We will scope the first one to non-template C++ APIs, and prioritize accessing
+C++ APIs from Carbon. This still will require major progress on the
+implementation of all the relevant Carbon features, and even design in some
+cases.
 
-### A concrete definition of our Minimum Viable Product for evaluation, the 0.1 language
+The second is focused on moving from a vague direction of "we will have a memory
+safe dialect of Carbon that is a reasonable default", to a specific and concrete
+design. We want to be able to illustrate exactly what it will look like to
+migrate existing unsafe C++ to Carbon (possibly at large scale), and then begin
+incrementally adopting and integrating memory safety into that otherwise unsafe
+Carbon codebase.
 
-While we have talked about our 0.1 language, or our Minimum Viable Product (MVP)
-for evaluation purposes, we need to pin down exactly what this includes. We need
-concrete milestones that need to be reached for us to have confidence in
-potential users and communities being able to evaluate Carbon as a successor to
-C++.
+Achieving these should dramatically reduce the risk around Carbon, especially in
+environments where memory safety is increasingly a necessary part of any future
+software development plans. They will also move the project much closer to our
+0.1 milestone.
 
-We expect this to include a reasonably precise set of requirements across:
+## Key results in 2025
 
--   Necessary language features
--   Nice-to-have features
--   Features can we omit and reasonably expect to not obstruct credible
-    evaluation
--   Implementation coverage of those features in the Carbon Explorer to validate
-    the design
--   Implementation coverage of those features in the toolchain
--   Quality of implementation in the toolchain, both in general and for specific
-    features
--   Necessary documentation, strategy, or other supporting material
+### Access most non-template C++ APIs in Carbon
 
-We expect this to also include at least enough of Carbon's features and C++
-interop to support [our basic example](/docs/images/snippets.md#mixed).
+Beyond excluding templates, this excludes coroutines, and any aspects that
+require accessing Carbon types in C++ such as templates with Carbon types as
+template arguments.
 
-Note that we don't expect to finish implementing the 0.1 design in 2023. Our
-goal is to make sufficient progress that we can complete the implementation in
-2024, but there are still many things that can go wrong and cause significant
-delays.
+This result includes both the implementation in the toolchain and the underlying
+design underpinning this implementation. It also includes implementation and
+design work on necessary Carbon language features that underpin the interop
+provided.
 
-### Complete design coverage of the 0.1 language's necessary features
+### Access non-generic Carbon APIs in C++
 
-This year we plan to finish the design of the necessary feature-set that we
-define above for the 0.1 language.
+This excludes generics to make the scope more tractable, but this remains a bit
+of a stretch goal for 2025, and how much progress we make will depend on how
+many unexpected difficulties we encounter getting the other direction to work,
+and any other delays.
 
-### Complete 0.1 language implementation coverage in the Carbon Explorer
+### Detailed safety strategy update, including expected tradeoffs and prioritization
 
-We expect to complete the level of Carbon Explorer validation of the design
-needed for 0.1 in 2023 so that we have high confidence in the design's cohesion
-and behavior.
+We haven't been focused on the safe side of Carbon for several years and will
+need to refresh our safety strategy to reflect the current plan, as well as
+expanding and making it more detailed to support building our initial memory
+safety design.
 
-### A toolchain that can build a minimal mixed C++ and Carbon program
+### Design for compile-time temporal and mutation memory safety
 
-Our end goal is to compile a minimal but non-trivial example of bi-directionally
-mixing C++ and Carbon code such as our main
-[example](https://github.com/carbon-language/carbon-lang/blob/trunk/docs/images/snippets.md#mixed)
-and run it successfully. However, completing everything involved in this example
-isn't expected to be realistic by the end of the year. We expect to work towards
-this example and in rough priority order across the following interop features
-and all the Carbon features they depend on:
+We expect our memory safety story for temporal memory safety to at the highest
+level follow the direction of Rust, using the type system to ensure compile-time
+guarantees of safety without the runtime overhead of garbage collection or
+reference counting. We want our design here to cover both temporal and mutation
+safety. While the exact level of safety and the tradeoffs we're willing to
+accept will be part of updating our safety strategy, at a fundamental level we
+need to fully address the security requirements on memory safety, much like
+other modern languages including Swift, Kotlin, Go, or Rust. A significantly
+lower security bar won't be acceptable for the expected users of safe Carbon.
 
--   Calling C++ functions from Carbon.
--   Importing concrete C++ types as Carbon types.
--   Using Carbon generics with a C++ type in Carbon.
--   (stretch) Calling Carbon functions from C++.
--   (stretch) Importing concrete Carbon types into C++.
+### Give talks at 2-3 conferences about Carbon topics, expanding our audience
 
-### Give talks at 2-3 conferences covering 3-4 different Carbon topics
+Beyond continuing to share details about Carbon with the open source and C++
+communities, we also want to expand our audience reach in 2025. We want to give
+talks at a conference in the Asia/Pacific region, and at a conference in the
+broader open source world beyond LLVM and C++ specific conferences.
 
-We want to engage both more broadly and in more depth with the C++ community as
-the Carbon 0.1 language becomes increasingly concrete. This should help set the
-stage for evaluations of Carbon when 0.1 is finished and available. To broaden
-our engagement, we want to give talks at 2-3 conferences spanning 2-3 geographic
-regions.
-
-We also want these talks to provide the C++ community a deeper understanding of
-the Carbon language and project, spanning 3-4 different topics. For example, we
-might share the details of the language design, governance, and implementation.
-
-## Beyond 2023
+## Beyond 2025
 
 Longer term goals are hard to pin down and always subject to change, but we want
 to give an idea of what kinds of things are expected at a high level further out
-in order to illustrate how the goals and priorities we have in 2023 feed into
+in order to illustrate how the goals and priorities we have in 2025 feed into
 subsequent years.
 
-### Potential 2024 goals: ship a working 0.1 language for evaluation
+### Potential 2026 goals: ship a working [0.1 language] for evaluation
 
-As we adjust our schedule and roadmap to reflect the realistic rate of progress,
-the _earliest_ it seems feasible to have everything we need to evaluate the 0.1
-language is 2024. However, this is just a lower bound. We may discover as we
-progress things that further push out the schedule here. That is the nature of
-an experimental project like Carbon.
+[0.1 language]:
+    /docs/project/milestones.md#milestone-01-a-minimum-viable-product-mvp-for-evaluation
+
+Because we are adding a design for memory safety to our 0.1 milestone, we are
+also expecting to push it out by at least a year. Shipping 0.1 in 2026 will be a
+very ambitious goal and may not be possible, but the end of 2026 is now the
+_soonest_ that 0.1 could realistically be ready to ship.
 
 We expect that once we reach this milestone the community will be able to start
 realistically evaluating Carbon as a C++ successor language. Of course, this
 evaluation will take some time.
 
-### Potential 2025-2026 goals: finish 0.2 language, stop experimenting
+### Potential 2027-2028 goals: finish [0.2 language], stop experimenting
+
+[0.2 language]:
+    /docs/project/milestones.md#milestone-02-feature-complete-product-for-evaluation
 
 Once Carbon is moving quickly and getting public feedback, we should be able to
 conclude the experiment. We should know if this is the right direction for
@@ -146,7 +142,10 @@ Some concrete goals that might show up in this time frame:
 -   Create a foundation or similar organization to manage the Carbon project,
     separate from any corporate entities that fund work on Carbon.
 
-### Potential goals _beyond_ 2026: ship 1.0 language & organization
+### Potential goals _beyond_ 2028: ship [1.0 language] & organization
+
+[1.0 language]:
+    /docs/project/milestones.md#milestone-10-no-longer-an-experiment-usable-in-production
 
 A major milestone will be the first version of a production language. We also
 plan to finish transferring all governance of Carbon to an independent open

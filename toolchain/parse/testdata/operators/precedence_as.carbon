@@ -3,60 +3,52 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 // AUTOUPDATE
+// TIP: To test this file alone, run:
+// TIP:   bazel test //toolchain/testing:file_test --test_arg=--file_tests=toolchain/parse/testdata/operators/precedence_as.carbon
+// TIP: To dump output, run:
+// TIP:   bazel run //toolchain/testing:file_test -- --dump_output --file_tests=toolchain/parse/testdata/operators/precedence_as.carbon
 
 fn F(n: i32) {
-  // Type operators and unary operators are lower precedence than `as`.
+  // Type operators and unary operators are higher precedence than `as`.
   -n as const i32;
   &n as i32*;
-
-  // `as` is lower precedence than relational comparisons and logical operators.
-  if (1 as i32 < 2 as i32 and true as bool and false as bool) {}
+  ^n as i32;
+  *n as i32;
 }
 
 // CHECK:STDOUT: - filename: precedence_as.carbon
 // CHECK:STDOUT:   parse_tree: [
+// CHECK:STDOUT:     {kind: 'FileStart', text: ''},
 // CHECK:STDOUT:         {kind: 'FunctionIntroducer', text: 'fn'},
-// CHECK:STDOUT:         {kind: 'Name', text: 'F'},
-// CHECK:STDOUT:           {kind: 'ParameterListStart', text: '('},
-// CHECK:STDOUT:             {kind: 'Name', text: 'n'},
-// CHECK:STDOUT:             {kind: 'Literal', text: 'i32'},
-// CHECK:STDOUT:           {kind: 'PatternBinding', text: ':', subtree_size: 3},
-// CHECK:STDOUT:         {kind: 'ParameterList', text: ')', subtree_size: 5},
+// CHECK:STDOUT:         {kind: 'IdentifierNameBeforeParams', text: 'F'},
+// CHECK:STDOUT:           {kind: 'ExplicitParamListStart', text: '('},
+// CHECK:STDOUT:             {kind: 'IdentifierNameNotBeforeParams', text: 'n'},
+// CHECK:STDOUT:             {kind: 'IntTypeLiteral', text: 'i32'},
+// CHECK:STDOUT:           {kind: 'LetBindingPattern', text: ':', subtree_size: 3},
+// CHECK:STDOUT:         {kind: 'ExplicitParamList', text: ')', subtree_size: 5},
 // CHECK:STDOUT:       {kind: 'FunctionDefinitionStart', text: '{', subtree_size: 8},
-// CHECK:STDOUT:             {kind: 'NameExpression', text: 'n'},
-// CHECK:STDOUT:           {kind: 'PrefixOperator', text: '-', subtree_size: 2},
-// CHECK:STDOUT:             {kind: 'Literal', text: 'i32'},
-// CHECK:STDOUT:           {kind: 'PrefixOperator', text: 'const', subtree_size: 2},
-// CHECK:STDOUT:         {kind: 'InfixOperator', text: 'as', subtree_size: 5},
-// CHECK:STDOUT:       {kind: 'ExpressionStatement', text: ';', subtree_size: 6},
-// CHECK:STDOUT:             {kind: 'NameExpression', text: 'n'},
-// CHECK:STDOUT:           {kind: 'PrefixOperator', text: '&', subtree_size: 2},
-// CHECK:STDOUT:             {kind: 'Literal', text: 'i32'},
-// CHECK:STDOUT:           {kind: 'PostfixOperator', text: '*', subtree_size: 2},
-// CHECK:STDOUT:         {kind: 'InfixOperator', text: 'as', subtree_size: 5},
-// CHECK:STDOUT:       {kind: 'ExpressionStatement', text: ';', subtree_size: 6},
-// CHECK:STDOUT:           {kind: 'IfConditionStart', text: '('},
-// CHECK:STDOUT:                       {kind: 'Literal', text: '1'},
-// CHECK:STDOUT:                       {kind: 'Literal', text: 'i32'},
-// CHECK:STDOUT:                     {kind: 'InfixOperator', text: 'as', subtree_size: 3},
-// CHECK:STDOUT:                       {kind: 'Literal', text: '2'},
-// CHECK:STDOUT:                       {kind: 'Literal', text: 'i32'},
-// CHECK:STDOUT:                     {kind: 'InfixOperator', text: 'as', subtree_size: 3},
-// CHECK:STDOUT:                   {kind: 'InfixOperator', text: '<', subtree_size: 7},
-// CHECK:STDOUT:                 {kind: 'ShortCircuitOperand', text: 'and', subtree_size: 8},
-// CHECK:STDOUT:                   {kind: 'Literal', text: 'true'},
-// CHECK:STDOUT:                   {kind: 'Literal', text: 'bool'},
-// CHECK:STDOUT:                 {kind: 'InfixOperator', text: 'as', subtree_size: 3},
-// CHECK:STDOUT:               {kind: 'InfixOperator', text: 'and', subtree_size: 12},
-// CHECK:STDOUT:             {kind: 'ShortCircuitOperand', text: 'and', subtree_size: 13},
-// CHECK:STDOUT:               {kind: 'Literal', text: 'false'},
-// CHECK:STDOUT:               {kind: 'Literal', text: 'bool'},
-// CHECK:STDOUT:             {kind: 'InfixOperator', text: 'as', subtree_size: 3},
-// CHECK:STDOUT:           {kind: 'InfixOperator', text: 'and', subtree_size: 17},
-// CHECK:STDOUT:         {kind: 'IfCondition', text: ')', subtree_size: 19},
-// CHECK:STDOUT:           {kind: 'CodeBlockStart', text: '{'},
-// CHECK:STDOUT:         {kind: 'CodeBlock', text: '}', subtree_size: 2},
-// CHECK:STDOUT:       {kind: 'IfStatement', text: 'if', subtree_size: 22},
-// CHECK:STDOUT:     {kind: 'FunctionDefinition', text: '}', subtree_size: 43},
+// CHECK:STDOUT:             {kind: 'IdentifierNameExpr', text: 'n'},
+// CHECK:STDOUT:           {kind: 'PrefixOperatorMinus', text: '-', subtree_size: 2},
+// CHECK:STDOUT:             {kind: 'IntTypeLiteral', text: 'i32'},
+// CHECK:STDOUT:           {kind: 'PrefixOperatorConst', text: 'const', subtree_size: 2},
+// CHECK:STDOUT:         {kind: 'InfixOperatorAs', text: 'as', subtree_size: 5},
+// CHECK:STDOUT:       {kind: 'ExprStatement', text: ';', subtree_size: 6},
+// CHECK:STDOUT:             {kind: 'IdentifierNameExpr', text: 'n'},
+// CHECK:STDOUT:           {kind: 'PrefixOperatorAmp', text: '&', subtree_size: 2},
+// CHECK:STDOUT:             {kind: 'IntTypeLiteral', text: 'i32'},
+// CHECK:STDOUT:           {kind: 'PostfixOperatorStar', text: '*', subtree_size: 2},
+// CHECK:STDOUT:         {kind: 'InfixOperatorAs', text: 'as', subtree_size: 5},
+// CHECK:STDOUT:       {kind: 'ExprStatement', text: ';', subtree_size: 6},
+// CHECK:STDOUT:             {kind: 'IdentifierNameExpr', text: 'n'},
+// CHECK:STDOUT:           {kind: 'PrefixOperatorCaret', text: '^', subtree_size: 2},
+// CHECK:STDOUT:           {kind: 'IntTypeLiteral', text: 'i32'},
+// CHECK:STDOUT:         {kind: 'InfixOperatorAs', text: 'as', subtree_size: 4},
+// CHECK:STDOUT:       {kind: 'ExprStatement', text: ';', subtree_size: 5},
+// CHECK:STDOUT:             {kind: 'IdentifierNameExpr', text: 'n'},
+// CHECK:STDOUT:           {kind: 'PrefixOperatorStar', text: '*', subtree_size: 2},
+// CHECK:STDOUT:           {kind: 'IntTypeLiteral', text: 'i32'},
+// CHECK:STDOUT:         {kind: 'InfixOperatorAs', text: 'as', subtree_size: 4},
+// CHECK:STDOUT:       {kind: 'ExprStatement', text: ';', subtree_size: 5},
+// CHECK:STDOUT:     {kind: 'FunctionDefinition', text: '}', subtree_size: 31},
 // CHECK:STDOUT:     {kind: 'FileEnd', text: ''},
 // CHECK:STDOUT:   ]

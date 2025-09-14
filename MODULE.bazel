@@ -1,0 +1,141 @@
+# Part of the Carbon Language project, under the Apache License v2.0 with LLVM
+# Exceptions. See /LICENSE for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+
+"""Bazel modules.
+
+`MODULE.bazel.lock` may change locally when `bazel` is executed. This means one
+of:
+
+1.  An input is changing, typically `MODULE.bazel` or `.bazelversion`.
+    -   Running `bazel mod deps` provides a canonical update to
+        `MODULE.bazel.lock`; include the changes.
+    -   GitHub test actions may also identify platform-specific lockfile
+        updates.
+2.  The host platform hasn't yet been added to the lock file.
+    -   Platforms tested with GitHub actions are kept up-to-date. Other
+        platforms may fall out of sync due to `bazel` or dependency changes,
+        and should be updated with a PR the same way a platform is added.
+    -   Running `bazel mod deps` provides a canonical update to
+        `MODULE.bazel.lock`; create a PR with those changes in order to include
+        the host platform.
+"""
+
+module(name = "carbon")
+
+http_archive = use_repo_rule(
+    "@bazel_tools//tools/build_defs/repo:http.bzl",
+    "http_archive",
+)
+
+bazel_dep(name = "abseil-cpp", version = "20250512.1")
+bazel_dep(name = "bazel_skylib", version = "1.8.1")
+bazel_dep(name = "google_benchmark", version = "1.9.4")
+bazel_dep(name = "googletest", version = "1.17.0")
+bazel_dep(name = "re2", version = "2024-07-02.bcr.1")
+bazel_dep(name = "rules_cc", version = "0.1.4")
+bazel_dep(name = "rules_pkg", version = "1.1.0")
+bazel_dep(name = "rules_shell", version = "0.5.0")
+bazel_dep(name = "tcmalloc", version = "0.0.0-20250331-43fcf6e")
+bazel_dep(name = "tree-sitter-bazel", version = "0.24.4")
+
+# The registry only has an old version. We use that here to avoid a miss but
+# override it with a newer version.
+bazel_dep(name = "libpfm", version = "4.11.0")
+
+libpfm_version = "4.13.0"
+
+# The official site is https://perfmon2.sourceforge.net/, but SourceForge makes
+# it difficult to download from bazel. On GitHub action runners,
+# https://git.code.sf.net/p/perfmon2/libpfm4 seems to be blocked. As a
+# consequence, use a mirror.
+archive_override(
+    module_name = "libpfm",
+    integrity = "sha256-sGBx1+UoQCplBCc+pwA1Tr/PS2L/4jnLZHH82wSuPz0=",
+    patch_strip = 1,
+    patches = ["@//bazel/libpfm:0001-Introduce-a-simple-native-Bazel-build.patch"],
+    strip_prefix = "libpfm4-{0}".format(libpfm_version),
+    urls = ["https://github.com/wcohen/libpfm4/archive/v{0}.tar.gz".format(libpfm_version)],
+)
+
+bazel_dep(name = "bazel_clang_tidy", dev_dependency = True)
+git_override(
+    module_name = "bazel_clang_tidy",
+    # HEAD as of 2025-01-09.
+    commit = "db677011c7363509a288a9fb3bf0a50830bbf791",
+    remote = "https://github.com/erenon/bazel_clang_tidy.git",
+)
+
+bazel_cc_toolchain = use_extension(
+    "//bazel/cc_toolchains:clang_configuration.bzl",
+    "clang_toolchain_extension",
+)
+use_repo(bazel_cc_toolchain, "bazel_cc_toolchain")
+
+register_toolchains("@bazel_cc_toolchain//:all")
+
+bazel_dep(name = "hedron_compile_commands", dev_dependency = True)
+git_override(
+    module_name = "hedron_compile_commands",
+    # HEAD as of 2025-01-09.
+    commit = "4f28899228fb3ad0126897876f147ca15026151e",
+    remote = "https://github.com/hedronvision/bazel-compile-commands-extractor.git",
+)
+
+boost_unordered_version = "1.85.0"
+
+http_archive(
+    name = "boost_unordered",
+    build_file = "@//:third_party/boost_unordered/BUILD.bazel",
+    integrity = "sha256-2dQ4IQH/xFiK1iWCkrMYLeR8zsSQqGchKOdTuf1u0zI=",
+    strip_prefix = "boost_unordered-{0}".format(boost_unordered_version),
+    urls = ["https://github.com/MikePopoloski/boost_unordered/archive/v{0}.tar.gz".format(boost_unordered_version)],
+)
+
+# Required for llvm-project.
+bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "zlib", version = "1.3.1.bcr.6", repo_name = "llvm_zlib")
+bazel_dep(name = "zstd", version = "1.5.7", repo_name = "llvm_zstd")
+
+###############################################################################
+# llvm-project
+###############################################################################
+
+# We pin to specific upstream commits and try to track top-of-tree reasonably
+# closely rather than pinning to a specific release.
+# HEAD as of 2025-09-07.
+llvm_project_version = "c000c9e4bf737c1cc0e5c7b435b24ea73d21ee05"
+
+# Load a repository for the raw llvm-project, pre-overlay.
+http_archive(
+    name = "llvm-raw",
+    build_file_content = "# empty",
+    integrity = "sha256-6URudXFgqoCuQI4hbb7AlN4Wj7WzLHFB4AWGjUV0UAI=",
+    patch_args = ["-p1"],
+    patches = [
+        "@carbon//bazel/llvm_project:0001_Patch_for_mallinfo2_when_using_Bazel_build_system.patch",
+        "@carbon//bazel/llvm_project:0002_Added_Bazel_build_for_compiler_rt_fuzzer.patch",
+        "@carbon//bazel/llvm_project:0003_Comment_out_unloaded_proto_library_dependencies.patch",
+    ],
+    strip_prefix = "llvm-project-{0}".format(llvm_project_version),
+    urls = ["https://github.com/llvm/llvm-project/archive/{0}.tar.gz".format(llvm_project_version)],
+)
+
+# Apply the overlay to produce llvm-project.
+llvm_project = use_extension(
+    "//bazel/llvm_project:llvm_project.bzl",
+    "llvm_project",
+)
+use_repo(llvm_project, "llvm-project")
+
+###############################################################################
+# Python
+###############################################################################
+
+bazel_dep(name = "rules_python", version = "1.5.1")
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    python_version = "3.11",
+)
+use_repo(python, "python_versions")

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <string>
 
 #include "common/check.h"
 #include "llvm/ADT/StringExtras.h"
@@ -38,7 +39,7 @@ auto UnescapeStringLiteral(llvm::StringRef source, const int hashtag_num,
   while (i < source.size()) {
     char c = source[i];
     if (i + hashtag_num < source.size() &&
-        source.slice(i, i + hashtag_num + 1).equals(escape)) {
+        source.slice(i, i + hashtag_num + 1) == escape) {
       i += hashtag_num + 1;
       if (i == source.size()) {
         return std::nullopt;

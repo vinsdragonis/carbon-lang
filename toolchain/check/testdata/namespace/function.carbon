@@ -2,7 +2,15 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
+// INCLUDE-FILE: toolchain/testing/testdata/min_prelude/convert.carbon
+// TODO: Add ranges and switch to "--dump-sem-ir-ranges=only".
+// EXTRA-ARGS: --dump-sem-ir-ranges=if-present
+//
 // AUTOUPDATE
+// TIP: To test this file alone, run:
+// TIP:   bazel test //toolchain/testing:file_test --test_arg=--file_tests=toolchain/check/testdata/namespace/function.carbon
+// TIP: To dump output, run:
+// TIP:   bazel run //toolchain/testing:file_test -- --dump_output --file_tests=toolchain/check/testdata/namespace/function.carbon
 
 namespace Foo;
 
@@ -17,26 +25,56 @@ fn Bar() {
   Foo.Baz();
 }
 
-// CHECK:STDOUT: file "function.carbon" {
-// CHECK:STDOUT:   %.loc7 = namespace {.Baz = %.loc13}
-// CHECK:STDOUT:   %.loc10 = fn_decl @Baz.1
-// CHECK:STDOUT:   %.loc13 = fn_decl @Baz.2
-// CHECK:STDOUT:   %.loc16 = fn_decl @Bar
+// CHECK:STDOUT: --- function.carbon
+// CHECK:STDOUT:
+// CHECK:STDOUT: constants {
+// CHECK:STDOUT:   %Baz.type.03f: type = fn_type @Baz.loc18 [concrete]
+// CHECK:STDOUT:   %empty_tuple.type: type = tuple_type () [concrete]
+// CHECK:STDOUT:   %Baz.5ea: %Baz.type.03f = struct_value () [concrete]
+// CHECK:STDOUT:   %Baz.type.898: type = fn_type @Baz.loc21 [concrete]
+// CHECK:STDOUT:   %Baz.eb4: %Baz.type.898 = struct_value () [concrete]
+// CHECK:STDOUT:   %Bar.type: type = fn_type @Bar [concrete]
+// CHECK:STDOUT:   %Bar: %Bar.type = struct_value () [concrete]
 // CHECK:STDOUT: }
 // CHECK:STDOUT:
-// CHECK:STDOUT: fn @Baz.1() {
+// CHECK:STDOUT: imports {
+// CHECK:STDOUT:   %Core: <namespace> = namespace file.%Core.import, [concrete] {
+// CHECK:STDOUT:     import Core//prelude
+// CHECK:STDOUT:     import Core//prelude/...
+// CHECK:STDOUT:   }
+// CHECK:STDOUT: }
+// CHECK:STDOUT:
+// CHECK:STDOUT: file {
+// CHECK:STDOUT:   package: <namespace> = namespace [concrete] {
+// CHECK:STDOUT:     .Core = imports.%Core
+// CHECK:STDOUT:     .Foo = %Foo
+// CHECK:STDOUT:     .Baz = %Baz.decl.loc18
+// CHECK:STDOUT:     .Bar = %Bar.decl
+// CHECK:STDOUT:   }
+// CHECK:STDOUT:   %Core.import = import Core
+// CHECK:STDOUT:   %Foo: <namespace> = namespace [concrete] {
+// CHECK:STDOUT:     .Baz = %Baz.decl.loc21
+// CHECK:STDOUT:   }
+// CHECK:STDOUT:   %Baz.decl.loc18: %Baz.type.03f = fn_decl @Baz.loc18 [concrete = constants.%Baz.5ea] {} {}
+// CHECK:STDOUT:   %Baz.decl.loc21: %Baz.type.898 = fn_decl @Baz.loc21 [concrete = constants.%Baz.eb4] {} {}
+// CHECK:STDOUT:   %Bar.decl: %Bar.type = fn_decl @Bar [concrete = constants.%Bar] {} {}
+// CHECK:STDOUT: }
+// CHECK:STDOUT:
+// CHECK:STDOUT: fn @Baz.loc18() {
 // CHECK:STDOUT: !entry:
 // CHECK:STDOUT:   return
 // CHECK:STDOUT: }
 // CHECK:STDOUT:
-// CHECK:STDOUT: fn @Baz.2() {
+// CHECK:STDOUT: fn @Baz.loc21() {
 // CHECK:STDOUT: !entry:
 // CHECK:STDOUT:   return
 // CHECK:STDOUT: }
 // CHECK:STDOUT:
 // CHECK:STDOUT: fn @Bar() {
 // CHECK:STDOUT: !entry:
-// CHECK:STDOUT:   %.loc17_10.1: type = tuple_type ()
-// CHECK:STDOUT:   %.loc17_10.2: init () = call @Baz.2()
+// CHECK:STDOUT:   %Foo.ref: <namespace> = name_ref Foo, file.%Foo [concrete = file.%Foo]
+// CHECK:STDOUT:   %Baz.ref: %Baz.type.898 = name_ref Baz, file.%Baz.decl.loc21 [concrete = constants.%Baz.eb4]
+// CHECK:STDOUT:   %Baz.call: init %empty_tuple.type = call %Baz.ref()
 // CHECK:STDOUT:   return
 // CHECK:STDOUT: }
+// CHECK:STDOUT:

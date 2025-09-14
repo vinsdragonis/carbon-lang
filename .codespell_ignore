@@ -2,15 +2,23 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
+ArchType
 atleast
 circularly
 compiletime
 copyable
 crate
+createor
 crossreference
 falsy
 forin
+groupt
+indext
 inout
+isELF
 parameteras
 pullrequest
+rightt
+rouge
 statics
+switcht

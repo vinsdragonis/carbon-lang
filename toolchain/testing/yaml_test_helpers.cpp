@@ -4,18 +4,28 @@
 
 #include "toolchain/testing/yaml_test_helpers.h"
 
+#include <iomanip>
+#include <optional>
+#include <ostream>
+#include <string>
+#include <utility>
+#include <variant>
+
+#include "common/raw_string_ostream.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/YAMLParser.h"
 
 namespace Carbon::Testing::Yaml {
 
+// This is for tests, so we should be okay with the recursion here.
+// NOLINTNEXTLINE(misc-no-recursion)
 static auto Parse(llvm::yaml::Node* node) -> Value {
   CARBON_CHECK(node != nullptr);
 
   // getType returns an unsigned int which should map to the enum.
   switch (static_cast<llvm::yaml::Node::NodeKind>(node->getType())) {
     case llvm::yaml::Node::NK_Null:
-      return Value{NullValue()};
+      return Value(NullValue());
 
     case llvm::yaml::Node::NK_Scalar: {
       llvm::SmallString<128> storage;
@@ -35,7 +45,7 @@ static auto Parse(llvm::yaml::Node* node) -> Value {
         Value value = Parse(kv.getValue());
         v.emplace_back(std::move(key), std::move(value));
       }
-      return Value{std::move(v)};
+      return Value(std::move(v));
     }
 
     case llvm::yaml::Node::NK_Sequence: {
@@ -43,11 +53,11 @@ static auto Parse(llvm::yaml::Node* node) -> Value {
       for (llvm::yaml::Node& n : llvm::cast<llvm::yaml::SequenceNode>(*node)) {
         v.push_back(Parse(&n));
       }
-      return Value{std::move(v)};
+      return Value(std::move(v));
     }
 
     case llvm::yaml::Node::NK_Alias:
-      return Value{AliasValue()};
+      return Value(AliasValue());
 
     case llvm::yaml::Node::NK_KeyValue:
       llvm_unreachable("should only exist as child of mapping");
@@ -61,9 +71,9 @@ auto Value::FromText(llvm::StringRef text) -> ErrorOr<SequenceValue> {
   sm.setDiagHandler(
       [](const llvm::SMDiagnostic& diag, void* context) -> void {
         auto* error_message = static_cast<std::optional<std::string>*>(context);
-        *error_message = std::string();
-        llvm::raw_string_ostream stream(**error_message);
+        RawStringOstream stream;
         diag.print(/*ProgName=*/nullptr, stream, /*ShowColors=*/false);
+        *error_message = stream.TakeStr();
       },
       &error_message);
   llvm::yaml::Stream yaml_stream(text, sm);
@@ -114,7 +124,7 @@ auto operator<<(std::ostream& os, const Value& v) -> std::ostream& {
 
     std::ostream& out;
   };
-  std::visit(Printer{os}, v);
+  std::visit(Printer{.out = os}, v);
   return os;
 }
 

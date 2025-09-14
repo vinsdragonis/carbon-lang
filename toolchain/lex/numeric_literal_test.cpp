@@ -7,6 +7,9 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <optional>
+#include <string>
+
 #include "common/check.h"
 #include "toolchain/diagnostics/diagnostic_emitter.h"
 #include "toolchain/lex/test_helpers.h"
@@ -22,32 +25,35 @@ using ::testing::Truly;
 using ::testing::VariantWith;
 
 class NumericLiteralTest : public ::testing::Test {
- protected:
-  NumericLiteralTest() : error_tracker(ConsoleDiagnosticConsumer()) {}
+ public:
+  NumericLiteralTest() : error_tracker(Diagnostics::ConsoleConsumer()) {}
 
-  auto Lex(llvm::StringRef text) -> NumericLiteral {
-    std::optional<NumericLiteral> result = NumericLiteral::Lex(text);
+  auto Lex(llvm::StringRef text, bool can_form_real_literal) -> NumericLiteral {
+    std::optional<NumericLiteral> result =
+        NumericLiteral::Lex(text, can_form_real_literal);
     CARBON_CHECK(result);
-    EXPECT_EQ(result->text(), text);
+    if (can_form_real_literal) {
+      EXPECT_EQ(result->text(), text);
+    }
     return *result;
   }
 
-  auto Parse(llvm::StringRef text) -> NumericLiteral::Value {
-    Testing::SingleTokenDiagnosticTranslator translator(text);
-    DiagnosticEmitter<const char*> emitter(translator, error_tracker);
-    return Lex(text).ComputeValue(emitter);
+  auto Parse(llvm::StringRef text, bool can_form_real_literal = true)
+      -> NumericLiteral::Value {
+    Testing::SingleTokenDiagnosticEmitter emitter(&error_tracker, text);
+    return Lex(text, can_form_real_literal).ComputeValue(emitter);
   }
 
-  ErrorTrackingDiagnosticConsumer error_tracker;
+  Diagnostics::ErrorTrackingConsumer error_tracker;
 };
 
 // Matcher for signed llvm::APInt.
-auto IsSignedInteger(int64_t value) -> Matcher<llvm::APInt> {
+auto IsSignedInt(int64_t value) -> Matcher<llvm::APInt> {
   return Property(&llvm::APInt::getSExtValue, value);
 }
 
 // Matcher for unsigned llvm::APInt.
-auto IsUnsignedInteger(uint64_t value) -> Matcher<llvm::APInt> {
+auto IsUnsignedInt(uint64_t value) -> Matcher<llvm::APInt> {
   return Property(&llvm::APInt::getZExtValue, value);
 }
 
@@ -55,8 +61,8 @@ auto IsUnsignedInteger(uint64_t value) -> Matcher<llvm::APInt> {
 template <typename ValueMatcher>
 auto HasIntValue(const ValueMatcher& value_matcher)
     -> Matcher<NumericLiteral::Value> {
-  return VariantWith<NumericLiteral::IntegerValue>(
-      Field(&NumericLiteral::IntegerValue::value, value_matcher));
+  return VariantWith<NumericLiteral::IntValue>(
+      Field(&NumericLiteral::IntValue::value, value_matcher));
 }
 
 struct RealMatcher {
@@ -79,7 +85,7 @@ auto HasUnrecoverableError() -> Matcher<NumericLiteral::Value> {
   return VariantWith<NumericLiteral::UnrecoverableError>(_);
 }
 
-TEST_F(NumericLiteralTest, HandlesIntegerLiteral) {
+TEST_F(NumericLiteralTest, HandlesIntLiteral) {
   struct Testcase {
     llvm::StringLiteral token;
     uint64_t value;
@@ -91,12 +97,14 @@ TEST_F(NumericLiteralTest, HandlesIntegerLiteral) {
       {.token = "0b10_10_11", .value = 0b10'10'11, .radix = 2},
       {.token = "1_234_567", .value = 1'234'567, .radix = 10},
   };
-  for (Testcase testcase : testcases) {
-    error_tracker.Reset();
-    EXPECT_THAT(Parse(testcase.token),
-                HasIntValue(IsUnsignedInteger(testcase.value)))
-        << testcase.token;
-    EXPECT_FALSE(error_tracker.seen_error()) << testcase.token;
+  for (bool can_form_real_literal : {false, true}) {
+    for (Testcase testcase : testcases) {
+      error_tracker.Reset();
+      EXPECT_THAT(Parse(testcase.token, can_form_real_literal),
+                  HasIntValue(IsUnsignedInt(testcase.value)))
+          << testcase.token;
+      EXPECT_FALSE(error_tracker.seen_error()) << testcase.token;
+    }
   }
 }
 
@@ -134,19 +142,24 @@ TEST_F(NumericLiteralTest, ValidatesBaseSpecifier) {
   }
 }
 
-TEST_F(NumericLiteralTest, ValidatesIntegerDigitSeparators) {
+TEST_F(NumericLiteralTest, ValidatesIntDigitSeparators) {
   llvm::StringLiteral valid[] = {
-      // Decimal literals optionally have digit separators every 3 places.
+      // Decimal literals.
       "1_234",
       "123_456",
       "1_234_567",
+      "12_34",
+      "123_4_6_789",
+      "12_3456_789",
 
-      // Hexadecimal literals optionally have digit separators every 4 places.
+      // Hexadecimal literals.
       "0x1_0000",
       "0x1000_0000",
       "0x1_0000_0000",
+      "0x12_3",
+      "0x1234_567",
 
-      // Binary integer literals can have digit separators anywhere..
+      // Binary literals.
       "0b1_0_1_0_1_0",
       "0b111_0000",
   };
@@ -158,18 +171,13 @@ TEST_F(NumericLiteralTest, ValidatesIntegerDigitSeparators) {
 
   llvm::StringLiteral invalid[] = {
       // Decimal literals.
-      "12_34",
-      "123_4_6_789",
-      "12_3456_789",
       "12__345",
       "1_",
 
       // Hexadecimal literals.
       "0x_1234",
       "0x123_",
-      "0x12_3",
       "0x_234_5678",
-      "0x1234_567",
 
       // Binary literals.
       "0b_10101",
@@ -190,55 +198,103 @@ TEST_F(NumericLiteralTest, HandlesRealLiteral) {
     uint64_t mantissa;
     int64_t exponent;
     unsigned radix;
+    uint64_t int_value;
   };
   Testcase testcases[] = {
       // Decimal real literals.
-      {.token = "0.0", .mantissa = 0, .exponent = -1, .radix = 10},
-      {.token = "12.345", .mantissa = 12345, .exponent = -3, .radix = 10},
-      {.token = "12.345e6", .mantissa = 12345, .exponent = 3, .radix = 10},
-      {.token = "12.345e+6", .mantissa = 12345, .exponent = 3, .radix = 10},
-      {.token = "1_234.5e-2", .mantissa = 12345, .exponent = -3, .radix = 10},
+      {.token = "0.0",
+       .mantissa = 0,
+       .exponent = -1,
+       .radix = 10,
+       .int_value = 0},
+      {.token = "12.345",
+       .mantissa = 12345,
+       .exponent = -3,
+       .radix = 10,
+       .int_value = 12},
+      {.token = "12.345e6",
+       .mantissa = 12345,
+       .exponent = 3,
+       .radix = 10,
+       .int_value = 12},
+      {.token = "12.345e+6",
+       .mantissa = 12345,
+       .exponent = 3,
+       .radix = 10,
+       .int_value = 12},
+      {.token = "1_234.5e-2",
+       .mantissa = 12345,
+       .exponent = -3,
+       .radix = 10,
+       .int_value = 1234},
       {.token = "1.0e-2_000_000",
        .mantissa = 10,
        .exponent = -2'000'001,
-       .radix = 10},
+       .radix = 10,
+       .int_value = 1},
 
       // Hexadecimal real literals.
       {.token = "0x1_2345_6789.CDEF",
        .mantissa = 0x1'2345'6789'CDEF,
        .exponent = -16,
-       .radix = 16},
-      {.token = "0x0.0001p4", .mantissa = 1, .exponent = -12, .radix = 16},
-      {.token = "0x0.0001p+4", .mantissa = 1, .exponent = -12, .radix = 16},
-      {.token = "0x0.0001p-4", .mantissa = 1, .exponent = -20, .radix = 16},
+       .radix = 16,
+       .int_value = 0x1'2345'6789},
+      {.token = "0x0.0001p4",
+       .mantissa = 1,
+       .exponent = -12,
+       .radix = 16,
+       .int_value = 0},
+      {.token = "0x0.0001p+4",
+       .mantissa = 1,
+       .exponent = -12,
+       .radix = 16,
+       .int_value = 0},
+      {.token = "0x0.0001p-4",
+       .mantissa = 1,
+       .exponent = -20,
+       .radix = 16,
+       .int_value = 0},
       // The exponent here works out as exactly INT64_MIN.
       {.token = "0x1.01p-9223372036854775800",
        .mantissa = 0x101,
        .exponent = -9223372036854775807L - 1L,
-       .radix = 16},
+       .radix = 16,
+       .int_value = 1},
       // The exponent here doesn't fit in a signed 64-bit integer until we
       // adjust for the radix point.
       {.token = "0x1.01p9223372036854775809",
        .mantissa = 0x101,
        .exponent = 9223372036854775801L,
-       .radix = 16},
+       .radix = 16,
+       .int_value = 1},
 
       // Binary real literals. These are invalid, but we accept them for error
       // recovery.
       {.token = "0b10_11_01.01",
        .mantissa = 0b10110101,
        .exponent = -2,
-       .radix = 2},
+       .radix = 2,
+       .int_value = 0b101101},
   };
+  // Check we get the right real value.
   for (Testcase testcase : testcases) {
     error_tracker.Reset();
     EXPECT_THAT(Parse(testcase.token),
                 HasRealValue({.radix = (testcase.radix == 10 ? 10 : 2),
-                              .mantissa = IsUnsignedInteger(testcase.mantissa),
-                              .exponent = IsSignedInteger(testcase.exponent)}))
+                              .mantissa = IsUnsignedInt(testcase.mantissa),
+                              .exponent = IsSignedInt(testcase.exponent)}))
         << testcase.token;
     EXPECT_EQ(error_tracker.seen_error(), testcase.radix == 2)
         << testcase.token;
+  }
+  // If we are required to stop at the `.` character, check we get the right int
+  // value instead.
+  for (Testcase testcase : testcases) {
+    error_tracker.Reset();
+    EXPECT_THAT(Parse(testcase.token, false),
+                HasIntValue(IsUnsignedInt(testcase.int_value)))
+        << testcase.token;
+    EXPECT_FALSE(error_tracker.seen_error());
   }
 }
 
@@ -248,7 +304,7 @@ TEST_F(NumericLiteralTest, HandlesRealLiteralOverflow) {
   EXPECT_THAT(
       Parse(input),
       HasRealValue({.radix = 2,
-                    .mantissa = IsUnsignedInteger(0x1000001),
+                    .mantissa = IsUnsignedInt(0x1000001),
                     .exponent = Truly([](llvm::APInt exponent) {
                       return (exponent + 9223372036854775800).getSExtValue() ==
                              -24;
@@ -257,17 +313,6 @@ TEST_F(NumericLiteralTest, HandlesRealLiteralOverflow) {
 }
 
 TEST_F(NumericLiteralTest, ValidatesRealLiterals) {
-  llvm::StringLiteral invalid_digit_separators[] = {
-      // Invalid digit separators.
-      "12_34.5",     "123.4_567", "123.456_7", "1_2_3.4",
-      "123.4e56_78", "0x12_34.5", "0x12.3_4",  "0x12.34p5_6",
-  };
-  for (llvm::StringLiteral literal : invalid_digit_separators) {
-    error_tracker.Reset();
-    EXPECT_THAT(Parse(literal), HasRealValue({})) << literal;
-    EXPECT_TRUE(error_tracker.seen_error()) << literal;
-  }
-
   llvm::StringLiteral invalid[] = {
       // No digits in integer part.
       "0x.0",

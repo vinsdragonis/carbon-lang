@@ -16,7 +16,7 @@ SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 import re
 import subprocess
-from typing import Callable, Dict, List, NamedTuple, Optional, Set, Tuple
+from typing import Callable, NamedTuple
 from xml.etree import ElementTree
 
 import scripts_utils
@@ -27,66 +27,66 @@ class ExternalRepo(NamedTuple):
     remap: Callable[[str], str]
     # The target expression to gather rules for within the repo.
     target: str
-    # The repo to use for dependencies.
-    dep_repo: Optional[str]
+    # Whether to use "" or <> for the include.
+    use_system_include: bool = False
+
+
+class RuleChoice(NamedTuple):
+    # Whether to use "" or <> for the include.
+    use_system_include: bool
+    # Possible rules that may be used.
+    rules: set[str]
 
 
 # Maps external repository names to a method translating bazel labels to file
 # paths for that repository.
-EXTERNAL_REPOS: Dict[str, ExternalRepo] = {
+EXTERNAL_REPOS: dict[str, ExternalRepo] = {
     # llvm:include/llvm/Support/Error.h ->llvm/Support/Error.h
     # clang-tools-extra/clangd:URI.h -> clang-tools-extra/clangd/URI.h
     "@llvm-project": ExternalRepo(
         lambda x: re.sub(":", "/", re.sub("^(.*:(lib|include))/", "", x)),
         "...",
-        None,
-    ),
-    # :src/google/protobuf/descriptor.h -> google/protobuf/descriptor.h
-    # - protobuf_headers is specified because there are multiple overlapping
-    #   targets.
-    # - @com_google_protobuf is the official dependency, and we use it, but it
-    #   aliases @com_github_protocolbuffers_protobuf.
-    "@com_github_protocolbuffers_protobuf": ExternalRepo(
-        lambda x: re.sub("^(.*:src)/", "", x),
-        ":protobuf_headers",
-        "@com_google_protobuf",
-    ),
-    # :src/libfuzzer/libfuzzer_macro.h -> libfuzzer/libfuzzer_macro.h
-    "@com_google_libprotobuf_mutator": ExternalRepo(
-        lambda x: re.sub("^(.*:src)/", "", x), "...", None
     ),
     # tools/cpp/runfiles:runfiles.h -> tools/cpp/runfiles/runfiles.h
-    "@bazel_tools": ExternalRepo(lambda x: re.sub(":", "/", x), "...", None),
+    "@bazel_tools": ExternalRepo(lambda x: re.sub(":", "/", x), "..."),
     # absl/flags:flag.h -> absl/flags/flag.h
-    "@com_google_absl": ExternalRepo(
-        lambda x: re.sub(":", "/", x), "...", None
-    ),
+    "@abseil-cpp": ExternalRepo(lambda x: re.sub(":", "/", x), "..."),
     # :re2/re2.h -> re2/re2.h
-    "@com_googlesource_code_re2": ExternalRepo(
-        lambda x: re.sub(":", "", x), ":re2", None
+    "@re2": ExternalRepo(lambda x: re.sub(":", "", x), ":re2"),
+    # :googletest/include/gtest/gtest.h -> gtest/gtest.h
+    "@googletest": ExternalRepo(
+        lambda x: re.sub(":google(?:mock|test)/include/", "", x),
+        ":gtest",
+        use_system_include=True,
+    ),
+    # All of the `boost_unordered` headers are in a single rule.
+    "@boost_unordered": ExternalRepo(
+        lambda x: re.sub("^(.*:include)/", "", x),
+        ":boost_unordered",
+        use_system_include=True,
     ),
 }
 
-# TODO: proto rules are aspect-based and their generated files don't show up in
-# `bazel query` output.
-# Try using `bazel cquery --output=starlark` to print `target.files`.
-# For protobuf, need to add support for `alias` rule kind.
-IGNORE_HEADER_REGEX = re.compile("^(.*\\.pb\\.h)$")
-IGNORE_SOURCE_FILE_REGEX = re.compile("^third_party/clangd")
+IGNORE_SOURCE_FILE_REGEX = re.compile(
+    r"^(third_party/clangd.*|common/version.*\.cpp"
+    r"|.*_autogen_manifest\.cpp"
+    r"|toolchain/base/llvm_tools.def"
+    r"|toolchain/base/runtime_sources.h)$"
+)
 
 
 class Rule(NamedTuple):
     # For cc_* rules:
     # The hdrs + textual_hdrs attributes, as relative paths to the file.
-    hdrs: Set[str]
+    hdrs: set[str]
     # The srcs attribute, as relative paths to the file.
-    srcs: Set[str]
+    srcs: set[str]
     # The deps attribute, as full bazel labels.
-    deps: Set[str]
+    deps: set[str]
 
     # For genrules:
     # The outs attribute, as relative paths to the file.
-    outs: Set[str]
+    outs: set[str]
 
 
 def remap_file(label: str) -> str:
@@ -94,17 +94,19 @@ def remap_file(label: str) -> str:
     repo, _, path = label.partition("//")
     if not repo:
         return path.replace(":", "/")
+    # Ignore the version, just use the repo name.
+    repo = repo.split("~", 1)[0]
     assert repo in EXTERNAL_REPOS, repo
     return EXTERNAL_REPOS[repo].remap(path)
 
 
-def get_bazel_list(list_child: ElementTree.Element, is_file: bool) -> Set[str]:
+def get_bazel_list(list_child: ElementTree.Element, is_file: bool) -> set[str]:
     """Returns the contents of a bazel list.
 
     The return will normally be the full label, unless `is_file` is set, in
     which case the label will be translated to the underlying file.
     """
-    results: Set[str] = set()
+    results: set[str] = set()
     for label in list_child:
         assert label.tag in ("label", "output"), label.tag
         value = label.attrib["value"]
@@ -114,7 +116,7 @@ def get_bazel_list(list_child: ElementTree.Element, is_file: bool) -> Set[str]:
     return results
 
 
-def get_rules(bazel: str, targets: str, keep_going: bool) -> Dict[str, Rule]:
+def get_rules(bazel: str, targets: str, keep_going: bool) -> dict[str, Rule]:
     """Queries the specified targets, returning the found rules.
 
     keep_going will be set to true for external repositories, where sometimes we
@@ -137,14 +139,14 @@ def get_rules(bazel: str, targets: str, keep_going: bool) -> Dict[str, Rule]:
     if p.returncode not in {0, 3}:
         print(p.stderr)
         exit(f"bazel query returned {p.returncode}")
-    rules: Dict[str, Rule] = {}
+    rules: dict[str, Rule] = {}
     for rule_xml in ElementTree.fromstring(p.stdout):
         assert rule_xml.tag == "rule", rule_xml.tag
         rule_name = rule_xml.attrib["name"]
-        hdrs: Set[str] = set()
-        srcs: Set[str] = set()
-        deps: Set[str] = set()
-        outs: Set[str] = set()
+        hdrs: set[str] = set()
+        srcs: set[str] = set()
+        deps: set[str] = set()
+        outs: set[str] = set()
         rule_class = rule_xml.attrib["class"]
         for list_child in rule_xml.findall("list"):
             list_name = list_child.attrib["name"]
@@ -167,7 +169,7 @@ def get_rules(bazel: str, targets: str, keep_going: bool) -> Dict[str, Rule]:
 
 
 def map_headers(
-    header_to_rule_map: Dict[str, Set[str]], rules: Dict[str, Rule]
+    header_to_rule_map: dict[str, RuleChoice], rules: dict[str, Rule]
 ) -> None:
     """Accumulates headers provided by rules into the map.
 
@@ -175,27 +177,37 @@ def map_headers(
     """
     for rule_name, rule in rules.items():
         repo, _, path = rule_name.partition("//")
-        if repo and EXTERNAL_REPOS[repo].dep_repo:
-            rule_name = f"{EXTERNAL_REPOS[repo].dep_repo}//{path}"
-
+        use_system_include = False
+        if repo in EXTERNAL_REPOS:
+            use_system_include = EXTERNAL_REPOS[repo].use_system_include
         for header in rule.hdrs:
             if header in header_to_rule_map:
-                header_to_rule_map[header].add(rule_name)
+                header_to_rule_map[header].rules.add(rule_name)
+                if (
+                    use_system_include
+                    != header_to_rule_map[header].use_system_include
+                ):
+                    exit(
+                        "Unexpected use_system_include inconsistency in "
+                        f"{header_to_rule_map[header]}"
+                    )
             else:
-                header_to_rule_map[header] = {rule_name}
+                header_to_rule_map[header] = RuleChoice(
+                    use_system_include, {rule_name}
+                )
 
 
 def get_missing_deps(
-    header_to_rule_map: Dict[str, Set[str]],
-    generated_files: Set[str],
+    header_to_rule_map: dict[str, RuleChoice],
+    generated_files: set[str],
     rule: Rule,
-) -> Tuple[Set[str], bool]:
+) -> tuple[set[str], bool]:
     """Returns missing dependencies for the rule.
 
     On return, the set is dependency labels that should be added; the bool
     indicates whether some where omitted due to ambiguity.
     """
-    missing_deps: Set[str] = set()
+    missing_deps: set[str] = set()
     ambiguous = False
     rule_files = rule.hdrs.union(rule.srcs)
     for source_file in rule_files:
@@ -205,42 +217,53 @@ def get_missing_deps(
             continue
 
         with open(source_file, "r") as f:
-            for header_groups in re.findall(
-                r'^(#include (?:"([^"]+)"|'
-                r"<((?:google|gmock|gtest|libfuzzer)/[^>]+)>))",
-                f.read(),
-                re.MULTILINE,
-            ):
-                # Ignore whether the source was a quote or system include.
-                header = header_groups[1]
-                if not header:
-                    header = header_groups[2]
+            file_content = f.read()
+        file_content_changed = False
 
-                if header in rule_files:
+        for header_groups in re.findall(
+            r'^(#include (?:(["<])([^">]+)[">]))',
+            file_content,
+            re.MULTILINE,
+        ):
+            (full_include, include_open, header) = header_groups
+            is_system_include = include_open == "<"
+
+            if header in rule_files:
+                continue
+            if header not in header_to_rule_map:
+                if is_system_include:
+                    # Don't error for unexpected system includes.
                     continue
-                if header not in header_to_rule_map:
-                    if IGNORE_HEADER_REGEX.match(header):
-                        print(
-                            f"Ignored missing "
-                            f"'{header_groups[0]}' in '{source_file}'"
-                        )
-                        continue
-                    else:
-                        exit(
-                            f"Missing rule for "
-                            f"'{header_groups[0]}' in '{source_file}'"
-                        )
-                dep_choices = header_to_rule_map[header]
-                if not dep_choices.intersection(rule.deps):
-                    if len(dep_choices) > 1:
-                        print(
-                            f"Ambiguous dependency choice for "
-                            f"'{header_groups[0]}' in '{source_file}': "
-                            f"{', '.join(dep_choices)}"
-                        )
-                        ambiguous = True
-                    # Use the single dep without removing it.
-                    missing_deps.add(next(iter(dep_choices)))
+                exit(
+                    f"Missing rule for " f"'{full_include}' in '{source_file}'"
+                )
+            rule_choice = header_to_rule_map[header]
+            if not rule_choice.rules.intersection(rule.deps):
+                if len(rule_choice.rules) > 1:
+                    print(
+                        f"Ambiguous dependency choice for "
+                        f"'{full_include}' in '{source_file}': "
+                        f"{', '.join(rule_choice.rules)}"
+                    )
+                    ambiguous = True
+                # Use the single dep without removing it.
+                missing_deps.add(next(iter(rule_choice.rules)))
+
+            # If the include style should change, update file content.
+            if is_system_include != rule_choice.use_system_include:
+                if rule_choice.use_system_include:
+                    new_include = f"#include <{header}>"
+                else:
+                    new_include = f'#include "{header}"'
+                print(
+                    f"Fixing include format in '{source_file}': "
+                    f"'{full_include}' to '{new_include}'"
+                )
+                file_content = file_content.replace(full_include, new_include)
+                file_content_changed = True
+        if file_content_changed:
+            with open(source_file, "w") as f:
+                f.write(file_content)
     return missing_deps, ambiguous
 
 
@@ -257,20 +280,17 @@ def main() -> None:
     external_rules = get_rules(bazel, external_repo_query, True)
 
     print("Building header map...")
-    header_to_rule_map: Dict[str, Set[str]] = {
-        "gmock/gmock.h": {"@com_google_googletest//:gtest"},
-        "gtest/gtest.h": {"@com_google_googletest//:gtest"},
-    }
+    header_to_rule_map: dict[str, RuleChoice] = {}
     map_headers(header_to_rule_map, carbon_rules)
     map_headers(header_to_rule_map, external_rules)
 
     print("Building generated file list...")
-    generated_files: Set[str] = set()
+    generated_files: set[str] = set()
     for rule in carbon_rules.values():
         generated_files = generated_files.union(rule.outs)
 
     print("Parsing headers from source files...")
-    all_missing_deps: List[Tuple[str, Set[str]]] = []
+    all_missing_deps: list[tuple[str, set[str]]] = []
     any_ambiguous = False
     for rule_name, rule in carbon_rules.items():
         missing_deps, ambiguous = get_missing_deps(

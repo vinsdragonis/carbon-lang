@@ -3,18 +3,21 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 #include "toolchain/check/context.h"
+#include "toolchain/check/handle.h"
 
 namespace Carbon::Check {
 
-auto HandleCodeBlockStart(Context& context, Parse::Node parse_node) -> bool {
-  context.node_stack().Push(parse_node);
-  context.PushScope();
+auto HandleParseNode(Context& context, Parse::CodeBlockStartId node_id)
+    -> bool {
+  context.node_stack().Push(node_id);
+  context.scope_stack().PushForSameRegion();
   return true;
 }
 
-auto HandleCodeBlock(Context& context, Parse::Node /*parse_node*/) -> bool {
-  context.PopScope();
-  context.node_stack().PopForSoloParseNode<Parse::NodeKind::CodeBlockStart>();
+auto HandleParseNode(Context& context, Parse::CodeBlockId /*node_id*/) -> bool {
+  context.scope_stack().Pop();
+  context.node_stack()
+      .PopAndDiscardSoloNodeId<Parse::NodeKind::CodeBlockStart>();
   return true;
 }
 

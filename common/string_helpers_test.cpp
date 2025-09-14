@@ -7,9 +7,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <optional>
 #include <string>
-
-#include "llvm/Support/Error.h"
 
 using ::testing::Eq;
 using ::testing::Optional;

@@ -2,9 +2,14 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
-// ARGS: compile --target=x86_64-unknown-linux-gnu --output=%t %s
+// INCLUDE-FILE: toolchain/testing/testdata/min_prelude/none.carbon
+// EXTRA-ARGS: --target=x86_64-unknown-linux-gnu --output=%t
 //
 // TODO: Add a way to write some basic tests for object file outputs.
 // AUTOUPDATE
+// TIP: To test this file alone, run:
+// TIP:   bazel test //toolchain/testing:file_test --test_arg=--file_tests=toolchain/codegen/testdata/objcode/basic.carbon
+// TIP: To dump output, run:
+// TIP:   bazel run //toolchain/testing:file_test -- --dump_output --file_tests=toolchain/codegen/testdata/objcode/basic.carbon
 
-fn Main() -> i32 { return 0; }
+fn Main() {}

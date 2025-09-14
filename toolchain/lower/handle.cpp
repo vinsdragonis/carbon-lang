@@ -2,124 +2,155 @@
 // Exceptions. See /LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/Sequence.h"
+#include "llvm/ADT/APFloat.h"
+#include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/Value.h"
+#include "llvm/Support/Casting.h"
 #include "toolchain/lower/function_context.h"
-#include "toolchain/sem_ir/node_kind.h"
+#include "toolchain/sem_ir/builtin_function_kind.h"
+#include "toolchain/sem_ir/function.h"
+#include "toolchain/sem_ir/inst.h"
+#include "toolchain/sem_ir/typed_insts.h"
 
 namespace Carbon::Lower {
 
-auto HandleInvalid(FunctionContext& /*context*/, SemIR::NodeId /*node_id*/,
-                   SemIR::Node /*node*/) -> void {
-  llvm_unreachable("never in actual IR");
+// Returns whether this instruction names a namespace.
+static auto IsNamespace(FunctionContext& context, SemIR::InstId inst_id)
+    -> bool {
+  // Note, we don't use context.GetTypeOfInst here. An instruction can't change
+  // from being a non-namespace in a generic to being a namespace in a specific,
+  // because namespace names are not first-class.
+  auto type_inst_id = context.sem_ir().types().GetInstId(
+      context.sem_ir().insts().Get(inst_id).type_id());
+  return type_inst_id == SemIR::NamespaceType::TypeInstId;
 }
 
-auto HandleCrossReference(FunctionContext& /*context*/,
-                          SemIR::NodeId /*node_id*/, SemIR::Node node) -> void {
-  CARBON_FATAL() << "TODO: Add support: " << node;
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::AddrOf inst) -> void {
+  context.SetLocal(inst_id, context.GetValue(inst.lvalue_id));
 }
 
-auto HandleAddressOf(FunctionContext& context, SemIR::NodeId node_id,
-                     SemIR::Node node) -> void {
-  context.SetLocal(node_id, context.GetLocal(node.GetAsAddressOf()));
-}
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::ArrayIndex inst) -> void {
+  auto* array_value = context.GetValue(inst.array_id);
+  auto* llvm_type = context.GetTypeOfInst(inst.array_id);
 
-auto HandleArrayIndex(FunctionContext& context, SemIR::NodeId node_id,
-                      SemIR::Node node) -> void {
-  auto [array_node_id, index_node_id] = node.GetAsArrayIndex();
-  auto* array_value = context.GetLocal(array_node_id);
-  auto* llvm_type =
-      context.GetType(context.semantics_ir().GetNode(array_node_id).type_id());
-  auto index_node = context.semantics_ir().GetNode(index_node_id);
-  llvm::Value* array_element_value;
-
-  if (index_node.kind() == SemIR::NodeKind::IntegerLiteral) {
-    const auto index = context.semantics_ir()
-                           .GetIntegerLiteral(index_node.GetAsIntegerLiteral())
-                           .getZExtValue();
-    array_element_value = context.GetIndexFromStructOrArray(
-        llvm_type, array_value, index, "array.index");
+  // The index in an `ArrayIndex` can be of any integer type, including
+  // IntLiteral. If it is an IntLiteral, its value representation is empty, so
+  // create a ConstantInt from its SemIR value directly.
+  llvm::Value* index;
+  auto index_type = context.GetTypeIdOfInst(inst.index_id);
+  if (index_type.file->types().GetInstId(index_type.type_id) ==
+      SemIR::IntLiteralType::TypeInstId) {
+    auto value = context.sem_ir().insts().GetAs<SemIR::IntValue>(
+        context.sem_ir().constant_values().GetConstantInstId(inst.index_id));
+    const auto& apint_value = context.sem_ir().ints().Get(value.int_id);
+    context.AddIntToCurrentFingerprint(apint_value.getSExtValue());
+    index = llvm::ConstantInt::get(context.llvm_context(), apint_value);
   } else {
-    auto* index = context.GetLocalLoaded(index_node_id);
-    // TODO: Handle return value or call such as `F()[a]`.
-    auto* zero = llvm::ConstantInt::get(
-        llvm::Type::getInt32Ty(context.llvm_context()), 0);
-    array_element_value = context.builder().CreateInBoundsGEP(
-        llvm_type, array_value, {zero, index}, "array.index");
+    context.AddIntToCurrentFingerprint(-1);
+    index = context.GetValue(inst.index_id);
   }
-  context.SetLocal(node_id, array_element_value);
+
+  llvm::Value* indexes[2] = {
+      llvm::ConstantInt::get(llvm::Type::getInt32Ty(context.llvm_context()), 0),
+      index};
+  context.SetLocal(inst_id,
+                   context.builder().CreateInBoundsGEP(llvm_type, array_value,
+                                                       indexes, "array.index"));
 }
 
-auto HandleArrayInit(FunctionContext& context, SemIR::NodeId node_id,
-                     SemIR::Node node) -> void {
-  auto [src_id, refs_id] = node.GetAsArrayInit();
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::ArrayInit inst) -> void {
   // The result of initialization is the return slot of the initializer.
+  context.SetLocal(inst_id, context.GetValue(inst.dest_id));
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::AsCompatible inst) -> void {
+  context.SetLocal(inst_id, context.GetValue(inst.source_id));
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId /*inst_id*/,
+                SemIR::Assign inst) -> void {
+  context.FinishInit(context.GetTypeIdOfInst(inst.lhs_id), inst.lhs_id,
+                     inst.rhs_id);
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::BindAlias inst) -> void {
+  if (IsNamespace(context, inst_id)) {
+    return;
+  }
+
+  context.SetLocal(inst_id, context.GetValue(inst.value_id));
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::ExportDecl inst) -> void {
+  if (IsNamespace(context, inst_id)) {
+    return;
+  }
+
+  context.SetLocal(inst_id, context.GetValue(inst.value_id));
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::BindName inst) -> void {
+  context.SetLocal(inst_id, context.GetValue(inst.value_id));
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::BindSymbolicName inst) -> void {
+  context.SetLocal(inst_id, context.GetValue(inst.value_id));
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::BlockArg inst) -> void {
   context.SetLocal(
-      node_id,
-      context.GetLocal(context.semantics_ir().GetNodeBlock(refs_id).back()));
+      inst_id,
+      context.GetBlockArg(inst.block_id, context.GetTypeIdOfInst(inst_id)));
 }
 
-auto HandleAssign(FunctionContext& context, SemIR::NodeId /*node_id*/,
-                  SemIR::Node node) -> void {
-  auto [storage_id, value_id] = node.GetAsAssign();
-  auto storage_type_id = context.semantics_ir().GetNode(storage_id).type_id();
-  context.FinishInitialization(storage_type_id, storage_id, value_id);
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::BoundMethod inst) -> void {
+  // Propagate just the function; the object is separately provided to the
+  // enclosing call as an implicit argument.
+  context.SetLocal(inst_id, context.GetValue(inst.function_decl_id));
 }
 
-auto HandleBinaryOperatorAdd(FunctionContext& /*context*/,
-                             SemIR::NodeId /*node_id*/, SemIR::Node node)
-    -> void {
-  CARBON_FATAL() << "TODO: Add support: " << node;
-}
-
-auto HandleBindName(FunctionContext& /*context*/, SemIR::NodeId /*node_id*/,
-                    SemIR::Node /*node*/) -> void {
-  // Probably need to do something here, but not necessary for now.
-}
-
-auto HandleBlockArg(FunctionContext& context, SemIR::NodeId node_id,
-                    SemIR::Node node) -> void {
-  SemIR::NodeBlockId block_id = node.GetAsBlockArg();
-  context.SetLocal(node_id, context.GetBlockArg(block_id, node.type_id()));
-}
-
-auto HandleBoolLiteral(FunctionContext& context, SemIR::NodeId node_id,
-                       SemIR::Node node) -> void {
-  llvm::Value* v = llvm::ConstantInt::get(context.builder().getInt1Ty(),
-                                          node.GetAsBoolLiteral().index);
-  context.SetLocal(node_id, v);
-}
-
-auto HandleBranch(FunctionContext& context, SemIR::NodeId /*node_id*/,
-                  SemIR::Node node) -> void {
-  SemIR::NodeBlockId target_block_id = node.GetAsBranch();
-
+auto HandleInst(FunctionContext& context, SemIR::InstId /*inst_id*/,
+                SemIR::Branch inst) -> void {
   // Opportunistically avoid creating a BasicBlock that contains just a branch.
+  // TODO: Don't do this if it would remove a loop preheader block.
   llvm::BasicBlock* block = context.builder().GetInsertBlock();
-  if (block->empty() && context.TryToReuseBlock(target_block_id, block)) {
+  if (block->empty() && context.TryToReuseBlock(inst.target_id, block)) {
     // Reuse this block as the branch target.
   } else {
-    context.builder().CreateBr(context.GetBlock(target_block_id));
+    context.builder().CreateBr(context.GetBlock(inst.target_id));
   }
 
   context.builder().ClearInsertionPoint();
 }
 
-auto HandleBranchIf(FunctionContext& context, SemIR::NodeId /*node_id*/,
-                    SemIR::Node node) -> void {
-  auto [target_block_id, cond_id] = node.GetAsBranchIf();
-  llvm::Value* cond = context.GetLocalLoaded(cond_id);
-  llvm::BasicBlock* then_block = context.GetBlock(target_block_id);
-  llvm::BasicBlock* else_block = context.CreateSyntheticBlock();
+auto HandleInst(FunctionContext& context, SemIR::InstId /*inst_id*/,
+                SemIR::BranchIf inst) -> void {
+  llvm::Value* cond = context.GetValue(inst.cond_id);
+  llvm::BasicBlock* then_block = context.GetBlock(inst.target_id);
+  llvm::BasicBlock* else_block = context.MakeSyntheticBlock();
   context.builder().CreateCondBr(cond, then_block, else_block);
   context.builder().SetInsertPoint(else_block);
 }
 
-auto HandleBranchWithArg(FunctionContext& context, SemIR::NodeId /*node_id*/,
-                         SemIR::Node node) -> void {
-  auto [target_block_id, arg_id] = node.GetAsBranchWithArg();
-  llvm::Value* arg = context.GetLocalLoaded(arg_id);
-  SemIR::TypeId arg_type_id = context.semantics_ir().GetNode(arg_id).type_id();
+auto HandleInst(FunctionContext& context, SemIR::InstId /*inst_id*/,
+                SemIR::BranchWithArg inst) -> void {
+  llvm::Value* arg = context.GetValue(inst.arg_id);
+  auto arg_type = context.GetTypeIdOfInst(inst.arg_id);
 
   // Opportunistically avoid creating a BasicBlock that contains just a branch.
   // We only do this for a block that we know will only have a single
@@ -128,350 +159,145 @@ auto HandleBranchWithArg(FunctionContext& context, SemIR::NodeId /*node_id*/,
   llvm::BasicBlock* block = context.builder().GetInsertBlock();
   llvm::BasicBlock* phi_predecessor = block;
   if (block->empty() && context.IsCurrentSyntheticBlock(block) &&
-      context.TryToReuseBlock(target_block_id, block)) {
+      context.TryToReuseBlock(inst.target_id, block)) {
     // Reuse this block as the branch target.
     phi_predecessor = block->getSinglePredecessor();
-    CARBON_CHECK(phi_predecessor)
-        << "Synthetic block did not have a single predecessor";
+    CARBON_CHECK(phi_predecessor,
+                 "Synthetic block did not have a single predecessor");
   } else {
-    context.builder().CreateBr(context.GetBlock(target_block_id));
+    context.builder().CreateBr(context.GetBlock(inst.target_id));
   }
 
-  context.GetBlockArg(target_block_id, arg_type_id)
+  context.GetBlockArg(inst.target_id, arg_type)
       ->addIncoming(arg, phi_predecessor);
   context.builder().ClearInsertionPoint();
 }
 
-auto HandleBuiltin(FunctionContext& /*context*/, SemIR::NodeId /*node_id*/,
-                   SemIR::Node node) -> void {
-  CARBON_FATAL() << "TODO: Add support: " << node;
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::Converted inst) -> void {
+  context.SetLocal(inst_id, context.GetValue(inst.result_id));
 }
 
-auto HandleCall(FunctionContext& context, SemIR::NodeId node_id,
-                SemIR::Node node) -> void {
-  auto [refs_id, function_id] = node.GetAsCall();
-  auto* llvm_function = context.GetFunction(function_id);
-  const auto& function = context.semantics_ir().GetFunction(function_id);
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::Deref inst) -> void {
+  context.SetLocal(inst_id, context.GetValue(inst.pointer_id));
+}
 
-  std::vector<llvm::Value*> args;
-  llvm::ArrayRef<SemIR::NodeId> arg_ids =
-      context.semantics_ir().GetNodeBlock(refs_id);
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::FacetAccessType /*inst*/) -> void {
+  context.SetLocal(inst_id, context.GetTypeAsValue());
+}
 
-  if (function.return_slot_id.is_valid()) {
-    args.push_back(context.GetLocal(arg_ids.back()));
-    arg_ids = arg_ids.drop_back();
+auto HandleInst(FunctionContext& context, SemIR::InstId /*inst_id*/,
+                SemIR::InitializeFrom inst) -> void {
+  context.FinishInit(context.GetTypeIdOfInst(inst.dest_id), inst.dest_id,
+                     inst.src_id);
+}
+
+auto HandleInst(FunctionContext& /*context*/, SemIR::InstId /*inst_id*/,
+                SemIR::NameBindingDecl /*inst*/) -> void {
+  // A NameBindingDecl is lowered by pattern matching.
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::NameRef inst) -> void {
+  if (IsNamespace(context, inst_id)) {
+    return;
   }
 
-  for (auto ref_id : arg_ids) {
-    auto arg_type_id = context.semantics_ir().GetNode(ref_id).type_id();
-    switch (SemIR::GetValueRepresentation(context.semantics_ir(), arg_type_id)
-                .kind) {
-      case SemIR::ValueRepresentation::None:
-        break;
-      case SemIR::ValueRepresentation::Copy:
-      case SemIR::ValueRepresentation::Custom:
-        args.push_back(context.GetLocalLoaded(ref_id));
-        break;
-      case SemIR::ValueRepresentation::Pointer:
-        args.push_back(context.GetLocal(ref_id));
-        break;
-    }
+  auto inner_inst_id = inst.value_id;
+
+  if (auto bind_name =
+          context.sem_ir().insts().TryGetAs<SemIR::BindName>(inner_inst_id)) {
+    inner_inst_id = bind_name->value_id;
   }
 
-  if (llvm_function->getReturnType()->isVoidTy()) {
-    context.builder().CreateCall(llvm_function, args);
-    // The value of a function call with a void return type shouldn't used, but
-    // StubReference needs a value to propagate.
-    context.SetLocal(node_id,
-                     llvm::PoisonValue::get(context.GetType(node.type_id())));
-  } else {
-    context.SetLocal(node_id,
-                     context.builder().CreateCall(llvm_function, args,
-                                                  llvm_function->getName()));
+  context.SetLocal(inst_id, context.GetValue(inner_inst_id));
+}
+
+auto HandleInst(FunctionContext& /*context*/, SemIR::InstId /*inst_id*/,
+                SemIR::OutParam /*inst*/) -> void {
+  // Parameters are lowered by `BuildFunctionDefinition`.
+}
+
+auto HandleInst(FunctionContext& /*context*/, SemIR::InstId /*inst_id*/,
+                SemIR::RefParam /*inst*/) -> void {
+  // Parameters are lowered by `BuildFunctionDefinition`.
+}
+
+auto HandleInst(FunctionContext& /*context*/, SemIR::InstId /*inst_id*/,
+                SemIR::ValueParam /*inst*/) -> void {
+  // Parameters are lowered by `BuildFunctionDefinition`.
+}
+
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::ReturnSlot inst) -> void {
+  if (context.GetInitRepr(context.GetTypeIdOfInst(inst_id)).kind ==
+      SemIR::InitRepr::InPlace) {
+    context.SetLocal(inst_id, context.GetValue(inst.storage_id));
   }
 }
 
-auto HandleDereference(FunctionContext& context, SemIR::NodeId node_id,
-                       SemIR::Node node) -> void {
-  context.SetLocal(node_id, context.GetLocal(node.GetAsDereference()));
-}
-
-auto HandleFunctionDeclaration(FunctionContext& /*context*/,
-                               SemIR::NodeId /*node_id*/, SemIR::Node node)
-    -> void {
-  CARBON_FATAL()
-      << "Should not be encountered. If that changes, we may want to change "
-         "higher-level logic to skip them rather than calling this. "
-      << node;
-}
-
-auto HandleInitializeFrom(FunctionContext& context, SemIR::NodeId /*node_id*/,
-                          SemIR::Node node) -> void {
-  auto [init_id, storage_id] = node.GetAsInitializeFrom();
-  auto storage_type_id = context.semantics_ir().GetNode(storage_id).type_id();
-  context.FinishInitialization(storage_type_id, storage_id, init_id);
-}
-
-auto HandleIntegerLiteral(FunctionContext& context, SemIR::NodeId node_id,
-                          SemIR::Node node) -> void {
-  llvm::APInt i =
-      context.semantics_ir().GetIntegerLiteral(node.GetAsIntegerLiteral());
-  // TODO: This won't offer correct semantics, but seems close enough for now.
-  llvm::Value* v =
-      llvm::ConstantInt::get(context.builder().getInt32Ty(), i.getZExtValue());
-  context.SetLocal(node_id, v);
-}
-
-auto HandleNamespace(FunctionContext& /*context*/, SemIR::NodeId /*node_id*/,
-                     SemIR::Node /*node*/) -> void {
-  // No action to take.
-}
-
-auto HandleNoOp(FunctionContext& /*context*/, SemIR::NodeId /*node_id*/,
-                SemIR::Node /*node*/) -> void {
-  // No action to take.
-}
-
-auto HandleParameter(FunctionContext& /*context*/, SemIR::NodeId /*node_id*/,
-                     SemIR::Node /*node*/) -> void {
-  CARBON_FATAL() << "Parameters should be lowered by `BuildFunctionDefinition`";
-}
-
-auto HandleRealLiteral(FunctionContext& context, SemIR::NodeId node_id,
-                       SemIR::Node node) -> void {
-  SemIR::RealLiteral real =
-      context.semantics_ir().GetRealLiteral(node.GetAsRealLiteral());
-  // TODO: This will probably have overflow issues, and should be fixed.
-  double val =
-      real.mantissa.getZExtValue() *
-      std::pow((real.is_decimal ? 10 : 2), real.exponent.getSExtValue());
-  llvm::APFloat llvm_val(val);
-  context.SetLocal(node_id, llvm::ConstantFP::get(
-                                context.builder().getDoubleTy(), llvm_val));
-}
-
-auto HandleReturn(FunctionContext& context, SemIR::NodeId /*node_id*/,
-                  SemIR::Node /*node*/) -> void {
+auto HandleInst(FunctionContext& context, SemIR::InstId /*inst_id*/,
+                SemIR::Return /*inst*/) -> void {
   context.builder().CreateRetVoid();
 }
 
-auto HandleReturnExpression(FunctionContext& context, SemIR::NodeId /*node_id*/,
-                            SemIR::Node node) -> void {
-  SemIR::NodeId expr_id = node.GetAsReturnExpression();
-  switch (SemIR::GetInitializingRepresentation(
-              context.semantics_ir(),
-              context.semantics_ir().GetNode(expr_id).type_id())
-              .kind) {
-    case SemIR::InitializingRepresentation::None:
-    case SemIR::InitializingRepresentation::InPlace:
+auto HandleInst(FunctionContext& context, SemIR::InstId /*inst_id*/,
+                SemIR::ReturnExpr inst) -> void {
+  auto result_type = context.GetTypeIdOfInst(inst.expr_id);
+  switch (context.GetInitRepr(result_type).kind) {
+    case SemIR::InitRepr::None:
       // Nothing to return.
       context.builder().CreateRetVoid();
       return;
-    case SemIR::InitializingRepresentation::ByCopy:
-      // The expression produces the value representation for the type.
-      context.builder().CreateRet(context.GetLocalLoaded(expr_id));
+    case SemIR::InitRepr::InPlace:
+      context.FinishInit(result_type, inst.dest_id, inst.expr_id);
+      context.builder().CreateRetVoid();
       return;
+    case SemIR::InitRepr::ByCopy:
+      // The expression produces the value representation for the type.
+      context.builder().CreateRet(context.GetValue(inst.expr_id));
+      return;
+    case SemIR::InitRepr::Incomplete:
+      CARBON_FATAL("Lowering return of incomplete type {0}",
+                   result_type.file->types().GetAsInst(result_type.type_id));
   }
 }
 
-auto HandleStringLiteral(FunctionContext& /*context*/,
-                         SemIR::NodeId /*node_id*/, SemIR::Node node) -> void {
-  CARBON_FATAL() << "TODO: Add support: " << node;
+auto HandleInst(FunctionContext& /*context*/, SemIR::InstId /*inst_id*/,
+                SemIR::SpecificFunction /*inst*/) -> void {
+  // Nothing to do. This value should never be consumed.
 }
 
-auto HandleStructAccess(FunctionContext& context, SemIR::NodeId node_id,
-                        SemIR::Node node) -> void {
-  auto [struct_id, member_index] = node.GetAsStructAccess();
-  auto struct_type_id = context.semantics_ir().GetNode(struct_id).type_id();
-  auto* llvm_type = context.GetType(struct_type_id);
-
-  // Get type information for member names.
-  auto type_refs = context.semantics_ir().GetNodeBlock(
-      context.semantics_ir()
-          .GetNode(context.semantics_ir().GetType(struct_type_id))
-          .GetAsStructType());
-  auto [field_name_id, field_type_id] =
-      context.semantics_ir()
-          .GetNode(type_refs[member_index.index])
-          .GetAsStructTypeField();
-  auto member_name = context.semantics_ir().GetString(field_name_id);
-
-  auto* gep = context.builder().CreateStructGEP(
-      llvm_type, context.GetLocal(struct_id), member_index.index, member_name);
-  context.SetLocal(node_id, gep);
+auto HandleInst(FunctionContext& /*context*/, SemIR::InstId /*inst_id*/,
+                SemIR::SpecificImplFunction /*inst*/) -> void {
+  // Nothing to do. This value should never be consumed.
 }
 
-auto HandleStructLiteral(FunctionContext& context, SemIR::NodeId node_id,
-                         SemIR::Node node) -> void {
-  // A StructLiteral should always be converted to a StructInit or StructValue
-  // if its value is needed.
-  context.SetLocal(node_id,
-                   llvm::PoisonValue::get(context.GetType(node.type_id())));
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::SpliceBlock inst) -> void {
+  context.LowerBlockContents(inst.block_id);
+  context.SetLocal(inst_id, context.GetValue(inst.result_id));
 }
 
-// Emits the value representation for a struct or tuple whose elements are the
-// contents of `refs_id`.
-auto EmitStructOrTupleValueRepresentation(FunctionContext& context,
-                                          SemIR::TypeId type_id,
-                                          SemIR::NodeBlockId refs_id,
-                                          llvm::Twine name) -> llvm::Value* {
-  auto* llvm_type = context.GetType(type_id);
-
-  switch (SemIR::GetValueRepresentation(context.semantics_ir(), type_id).kind) {
-    case SemIR::ValueRepresentation::None:
-      // TODO: Add a helper to get a "no value representation" value.
-      return llvm::PoisonValue::get(llvm_type);
-
-    case SemIR::ValueRepresentation::Copy: {
-      auto refs = context.semantics_ir().GetNodeBlock(refs_id);
-      CARBON_CHECK(refs.size() == 1)
-          << "Unexpected size for aggregate with by-copy value representation";
-      // TODO: Remove the LLVM StructType wrapper in this case, so we don't
-      // need this `insert_value` wrapping.
-      return context.builder().CreateInsertValue(
-          llvm::PoisonValue::get(llvm_type), context.GetLocal(refs[0]), {0});
-    }
-
-    case SemIR::ValueRepresentation::Pointer: {
-      // Write the object representation to a local alloca so we can produce a
-      // pointer to it as the value representation.
-      auto* alloca = context.builder().CreateAlloca(
-          llvm_type, /*ArraySize=*/nullptr, name);
-      for (auto [i, ref] :
-           llvm::enumerate(context.semantics_ir().GetNodeBlock(refs_id))) {
-        auto* gep = context.builder().CreateStructGEP(llvm_type, alloca, i);
-        // TODO: We are loading a value representation here and storing an
-        // object representation!
-        context.builder().CreateStore(context.GetLocal(ref), gep);
-      }
-      return alloca;
-    }
-
-    case SemIR::ValueRepresentation::Custom:
-      CARBON_FATAL()
-          << "Aggregate should never have custom value representation";
-  }
+auto HandleInst(FunctionContext& /*context*/, SemIR::InstId /*inst_id*/,
+                SemIR::SpliceInst /*inst*/) -> void {
+  // TODO: Get the constant value of the spliced instruction from the current
+  // specific, and lower the instruction in that constant value.
+  CARBON_FATAL("Template lowering not implemented yet");
 }
 
-auto HandleStructInit(FunctionContext& context, SemIR::NodeId node_id,
-                      SemIR::Node node) -> void {
-  auto* llvm_type = context.GetType(node.type_id());
-
-  switch (SemIR::GetInitializingRepresentation(context.semantics_ir(),
-                                               node.type_id())
-              .kind) {
-    case SemIR::InitializingRepresentation::None:
-    case SemIR::InitializingRepresentation::InPlace:
-      // TODO: Add a helper to poison a value slot.
-      context.SetLocal(node_id, llvm::PoisonValue::get(llvm_type));
-      break;
-
-    case SemIR::InitializingRepresentation::ByCopy: {
-      auto [struct_literal_id, refs_id] = node.GetAsStructInit();
-      context.SetLocal(node_id,
-                       EmitStructOrTupleValueRepresentation(
-                           context, node.type_id(), refs_id, "struct.init"));
-      break;
-    }
-  }
-}
-
-auto HandleStructValue(FunctionContext& context, SemIR::NodeId node_id,
-                       SemIR::Node node) -> void {
-  auto [struct_literal_id, refs_id] = node.GetAsStructValue();
-  context.SetLocal(node_id, EmitStructOrTupleValueRepresentation(
-                                context, node.type_id(), refs_id, "struct"));
-}
-
-auto HandleStructTypeField(FunctionContext& /*context*/,
-                           SemIR::NodeId /*node_id*/, SemIR::Node /*node*/)
-    -> void {
-  // No action to take.
-}
-
-auto HandleStubReference(FunctionContext& context, SemIR::NodeId node_id,
-                         SemIR::Node node) -> void {
-  context.SetLocal(node_id, context.GetLocal(node.GetAsStubReference()));
-}
-
-auto HandleTupleAccess(FunctionContext& context, SemIR::NodeId node_id,
-                       SemIR::Node node) -> void {
-  auto [tuple_node_id, index] = node.GetAsTupleAccess();
-  auto* tuple_value = context.GetLocal(tuple_node_id);
-  auto* llvm_type =
-      context.GetType(context.semantics_ir().GetNode(tuple_node_id).type_id());
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::UnaryOperatorNot inst) -> void {
   context.SetLocal(
-      node_id, context.GetIndexFromStructOrArray(llvm_type, tuple_value,
-                                                 index.index, "tuple.elem"));
+      inst_id, context.builder().CreateNot(context.GetValue(inst.operand_id)));
 }
 
-auto HandleTupleIndex(FunctionContext& context, SemIR::NodeId node_id,
-                      SemIR::Node node) -> void {
-  auto [tuple_node_id, index_node_id] = node.GetAsTupleIndex();
-  auto* tuple_value = context.GetLocal(tuple_node_id);
-  auto index_node = context.semantics_ir().GetNode(index_node_id);
-  const auto index = context.semantics_ir()
-                         .GetIntegerLiteral(index_node.GetAsIntegerLiteral())
-                         .getZExtValue();
-  auto* llvm_type =
-      context.GetType(context.semantics_ir().GetNode(tuple_node_id).type_id());
-  context.SetLocal(node_id, context.GetIndexFromStructOrArray(
-                                llvm_type, tuple_value, index, "tuple.index"));
-}
-
-auto HandleTupleLiteral(FunctionContext& context, SemIR::NodeId node_id,
-                        SemIR::Node node) -> void {
-  // A TupleLiteral should always be converted to a TupleInit or TupleValue if
-  // its value is needed.
-  context.SetLocal(node_id,
-                   llvm::PoisonValue::get(context.GetType(node.type_id())));
-}
-
-auto HandleTupleInit(FunctionContext& context, SemIR::NodeId node_id,
-                     SemIR::Node node) -> void {
-  auto* llvm_type = context.GetType(node.type_id());
-
-  switch (SemIR::GetInitializingRepresentation(context.semantics_ir(),
-                                               node.type_id())
-              .kind) {
-    case SemIR::InitializingRepresentation::None:
-    case SemIR::InitializingRepresentation::InPlace:
-      // TODO: Add a helper to poison a value slot.
-      context.SetLocal(node_id, llvm::PoisonValue::get(llvm_type));
-      break;
-
-    case SemIR::InitializingRepresentation::ByCopy: {
-      auto [struct_literal_id, refs_id] = node.GetAsTupleInit();
-      context.SetLocal(
-          node_id, EmitStructOrTupleValueRepresentation(context, node.type_id(),
-                                                        refs_id, "tuple.init"));
-      break;
-    }
-  }
-}
-
-auto HandleTupleValue(FunctionContext& context, SemIR::NodeId node_id,
-                      SemIR::Node node) -> void {
-  auto [struct_literal_id, refs_id] = node.GetAsTupleValue();
-  context.SetLocal(node_id, EmitStructOrTupleValueRepresentation(
-                                context, node.type_id(), refs_id, "tuple"));
-}
-
-auto HandleUnaryOperatorNot(FunctionContext& context, SemIR::NodeId node_id,
-                            SemIR::Node node) -> void {
-  context.SetLocal(node_id, context.builder().CreateNot(context.GetLocal(
-                                node.GetAsUnaryOperatorNot())));
-}
-
-auto HandleVarStorage(FunctionContext& context, SemIR::NodeId node_id,
-                      SemIR::Node node) -> void {
-  // TODO: Eventually this name will be optional, and we'll want to provide
-  // something like `var` as a default. However, that's not possible right now
-  // so cannot be tested.
-  auto name = context.semantics_ir().GetString(node.GetAsVarStorage());
-  auto* alloca = context.builder().CreateAlloca(context.GetType(node.type_id()),
-                                                /*ArraySize=*/nullptr, name);
-  context.SetLocal(node_id, alloca);
+auto HandleInst(FunctionContext& context, SemIR::InstId inst_id,
+                SemIR::VarStorage /* inst */) -> void {
+  context.SetLocal(inst_id,
+                   context.CreateAlloca(context.GetTypeOfInst(inst_id)));
 }
 
 }  // namespace Carbon::Lower
